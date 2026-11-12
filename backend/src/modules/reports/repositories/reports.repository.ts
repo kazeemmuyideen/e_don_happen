@@ -1,12 +1,12 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, Between, LessThan, MoreThan, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { Report } from '../entities/report.entity.js';
 import type { FeedQueryParams } from '../interfaces/report.interface.js';
 import {
+  PUBLIC_REPORT_STATES,
   ReportCategory,
   ReportState,
-  LocationPrecision,
 } from '../interfaces/report.interface.js';
 
 @Injectable()
@@ -35,13 +35,7 @@ export class ReportsRepository {
       .leftJoin('report.reporter', 'reporter')
       .addSelect(['reporter.id', 'reporter.displayName'])
       .where('report.state IN (:...states)', {
-        states: [
-          ReportState.UNVERIFIED,
-          ReportState.CORROBORATED,
-          ReportState.VERIFIED,
-          ReportState.DISPUTED,
-          ReportState.RESOLVED,
-        ],
+        states: PUBLIC_REPORT_STATES,
       });
 
     if (
@@ -77,6 +71,21 @@ export class ReportsRepository {
       .skip(params.offset || 0);
 
     return query.getMany();
+  }
+
+  async countVerifiedByReporterIds(
+    reporterIds: string[],
+  ): Promise<Map<string, number>> {
+    if (reporterIds.length === 0) return new Map();
+    const rows = await this.reportRepository
+      .createQueryBuilder('report')
+      .select('report.reporterId', 'reporterId')
+      .addSelect('COUNT(*)', 'count')
+      .where('report.reporterId IN (:...reporterIds)', { reporterIds })
+      .andWhere('report.state = :state', { state: ReportState.VERIFIED })
+      .groupBy('report.reporterId')
+      .getRawMany<{ reporterId: string; count: string }>();
+    return new Map(rows.map((row) => [row.reporterId, Number(row.count)]));
   }
 
   async updateState(id: string, state: ReportState): Promise<void> {

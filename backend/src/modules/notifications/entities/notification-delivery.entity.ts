@@ -42,7 +42,10 @@ export class NotificationDelivery {
   costMetadata: any;
 
   @Column({ type: 'jsonb', nullable: true })
-  payload: { title: string; body: string; reportId: string };
+  payload: { title: string; body: string; reportId?: string } & Record<
+    string,
+    any
+  >;
 
   @Column({ type: 'varchar', name: 'push_state', default: 'none' })
   pushState: string;

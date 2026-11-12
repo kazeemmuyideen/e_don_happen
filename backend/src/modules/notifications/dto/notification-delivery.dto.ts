@@ -1,4 +1,18 @@
-import { IsEnum, IsNumber, IsOptional, IsString, IsUUID } from 'class-validator';
+import {
+  IsBoolean,
+  IsEnum,
+  IsInt,
+  IsNotEmpty,
+  IsNumber,
+  IsObject,
+  IsOptional,
+  IsString,
+  IsUUID,
+  Max,
+  MaxLength,
+  Min,
+} from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum DeliveryChannel {
@@ -83,11 +97,35 @@ export class NotificationDeliveryFilterDto {
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
   page?: number;
 
-  @ApiPropertyOptional({ default: 20 })
+  @ApiPropertyOptional({ default: 20, maximum: 100 })
   @IsOptional()
-  @IsNumber()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
   limit?: number;
+}
+
+export class ProviderResponseDto {
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsObject()
+  providerResponse?: Record<string, any>;
+}
+
+export class MarkDeliveryFailedDto {
+  @ApiProperty({ maxLength: 1000 })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(1000)
+  error: string;
+
+  @ApiProperty()
+  @IsBoolean()
+  willRetry: boolean;
 }

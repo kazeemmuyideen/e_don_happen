@@ -331,6 +331,7 @@ describe('NotificationsController', () => {
       const result = await controller.getDeliveryStats();
 
       expect(service.getDeliveryStats).toHaveBeenCalledWith(undefined);
+      expect(result).toEqual({});
     });
   });
 });

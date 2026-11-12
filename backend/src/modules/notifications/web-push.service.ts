@@ -205,14 +205,23 @@ export class WebPushService implements OnModuleInit, OnModuleDestroy {
         });
         let accepted = false;
         let retry = false;
+        const payload = delivery.payload ?? ({} as Record<string, unknown>);
+        const reportId =
+          typeof payload.reportId === 'string' ? payload.reportId : undefined;
+        const notification = {
+          title: String(payload.title || 'E don happen').slice(0, 120),
+          body: String(payload.body || 'A new update is available.').slice(
+            0,
+            180,
+          ),
+          url: reportId
+            ? `/dashboard?report=${encodeURIComponent(reportId)}`
+            : '/dashboard',
+          tag: delivery.id,
+        };
         for (const device of devices) {
           if (device.createdAt > delivery.createdAt) continue;
-          const result = await this.send(device, {
-            title: delivery.payload.title.slice(0, 120),
-            body: delivery.payload.body.slice(0, 180),
-            url: `/dashboard?report=${encodeURIComponent(delivery.payload.reportId)}`,
-            tag: delivery.id,
-          });
+          const result = await this.send(device, notification);
           accepted ||= result.accepted;
           retry ||= result.retry;
         }

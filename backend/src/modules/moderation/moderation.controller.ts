@@ -8,19 +8,15 @@ import {
   Get,
   Post,
   Put,
-  Delete,
   Param,
   Body,
   Query,
-  HttpCode,
-  HttpStatus,
   UseGuards,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
-  ApiParam,
   ApiQuery,
   ApiBearerAuth,
 } from '@nestjs/swagger';
@@ -33,8 +29,12 @@ import {
   ReviewAppealDto,
   MergeReportsDto,
   ModerationQueueItemDto,
+  ModerationQueueQueryDto,
+  QuickApproveDto,
+  QuickReasonDto,
   ModerationActionType,
   ModerationTargetType,
+  ReportState,
 } from './dto/moderation.dto.js';
 import { ModerationAction } from './entities/moderation-action.entity.js';
 
@@ -94,17 +94,22 @@ export class ModerationController {
   // Moderation queue
   @Get('queue')
   @ApiOperation({ summary: 'Get moderation queue for current moderator' })
-  @ApiQuery({ name: 'targetType', required: false, enum: ModerationTargetType })
   @ApiResponse({ status: 200, type: [ModerationQueueItemDto] })
   async getQueue(
     @CurrentUserId() moderatorId: string,
-    @Query('targetType') targetType?: ModerationTargetType,
+    @Query() query: ModerationQueueQueryDto,
   ): Promise<ModerationQueueItemDto[]> {
-    return this.moderationService.getQueue(moderatorId, targetType);
+    return this.moderationService.getQueue(
+      moderatorId,
+      query.targetType,
+      query.limit,
+      query.offset,
+    );
   }
 
   // Appeals
   @Post('appeals')
+  @Roles(...Object.values(UserRole))
   @ApiOperation({ summary: 'Create an appeal for a moderation action' })
   @ApiResponse({ status: 201, description: 'Appeal submitted' })
   @ApiResponse({ status: 400, description: 'Appeal already exists' })
@@ -127,14 +132,14 @@ export class ModerationController {
     @Body() dto: ReviewAppealDto,
     @CurrentUserId() moderatorId: string,
   ): Promise<ModerationAction> {
-    return this.moderationService.reviewAppeal(moderatorId, dto);
+    return this.moderationService.reviewAppeal(moderatorId, id, dto);
   }
 
   @Get('appeals/pending')
   @ApiOperation({ summary: 'Get pending appeals' })
   @ApiResponse({ status: 200, type: [ModerationAction] })
   async getPendingAppeals(): Promise<ModerationAction[]> {
-    return this.moderationService.getPendingAppeals?.() ?? [];
+    return this.moderationService.getPendingAppeals();
   }
 
   // Merge reports
@@ -186,14 +191,14 @@ export class ModerationController {
   async quickApprove(
     @Param('id') id: string,
     @CurrentUserId() actorId: string,
-    @Body() body: { newState?: string; reason: string },
+    @Body() body: QuickApproveDto,
   ) {
     return this.moderationService.createAction(actorId, {
       targetId: id,
       targetType: ModerationTargetType.REPORT,
       action: ModerationActionType.APPROVE,
       reason: body.reason,
-      newState: body.newState || 'verified',
+      newState: body.newState || ReportState.VERIFIED,
     });
   }
 
@@ -203,7 +208,7 @@ export class ModerationController {
   async quickReject(
     @Param('id') id: string,
     @CurrentUserId() actorId: string,
-    @Body() body: { reason: string },
+    @Body() body: QuickReasonDto,
   ) {
     return this.moderationService.createAction(actorId, {
       targetId: id,
@@ -220,48 +225,14 @@ export class ModerationController {
   async flagReport(
     @Param('id') id: string,
     @CurrentUserId() actorId: string,
-    @Body() body: { reason: string },
+    @Body() body: QuickReasonDto,
   ) {
     return this.moderationService.createAction(actorId, {
       targetId: id,
       targetType: ModerationTargetType.REPORT,
       action: ModerationActionType.REVIEW,
       reason: body.reason,
-    });
-  }
-
-  @Post('incidents/:id/verify')
-  @ApiOperation({ summary: 'Verify an incident' })
-  @ApiResponse({ status: 200, description: 'Incident verified' })
-  async verifyIncident(
-    @Param('id') id: string,
-    @CurrentUserId() actorId: string,
-    @Body() body: { reason: string; severity?: string },
-  ) {
-    return this.moderationService.createAction(actorId, {
-      targetId: id,
-      targetType: ModerationTargetType.INCIDENT,
-      action: ModerationActionType.APPROVE,
-      reason: body.reason,
-      newState: 'verified',
-      metadata: { severity: body.severity },
-    });
-  }
-
-  @Post('incidents/:id/dispute')
-  @ApiOperation({ summary: 'Mark an incident as disputed' })
-  @ApiResponse({ status: 200, description: 'Incident disputed' })
-  async disputeIncident(
-    @Param('id') id: string,
-    @CurrentUserId() actorId: string,
-    @Body() body: { reason: string },
-  ) {
-    return this.moderationService.createAction(actorId, {
-      targetId: id,
-      targetType: ModerationTargetType.INCIDENT,
-      action: ModerationActionType.LABEL,
-      reason: body.reason,
-      newState: 'disputed',
+      newState: ReportState.UNDER_REVIEW,
     });
   }
 }

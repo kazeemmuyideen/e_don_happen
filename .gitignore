@@ -1,44 +1,25 @@
-<<<<<<< HEAD
-=======
-# compiled output
+# Compiled output
 /dist
-/node_modules
 /build
-
-# TypeScript build cache
-*.tsbuildinfo
-
->>>>>>> a51eb7f5b6fd6a0a6526bfe34c767a21a44100db
-# Logs
-logs
-*.log
-npm-debug.log*
-<<<<<<< HEAD
-yarn-debug.log*
-yarn-error.log*
-pnpm-debug.log*
-lerna-debug.log*
-
+**/dist/
+**/node_modules/
 node_modules
 dist
 dist-ssr
 *.local
 
-# Editor directories and files
-.vscode/*
-!.vscode/extensions.json
-.idea
-.DS_Store
-*.suo
-*.ntvs*
-*.njsproj
-*.sln
-*.sw?
-=======
-pnpm-debug.log*
+# TypeScript build cache
+*.tsbuildinfo
+
+# Logs
+logs
+*.log
+npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
+pnpm-debug.log*
 lerna-debug.log*
+report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 
 # OS
 .DS_Store
@@ -46,8 +27,28 @@ lerna-debug.log*
 # Tests
 /coverage
 /.nyc_output
+**/coverage/
+
+# Environment files
+.env
+.env.development.local
+.env.test.local
+.env.production.local
+.env.local
+
+# Temporary runtime data
+.temp
+.tmp
+pids
+*.pid
+*.seed
+*.pid.lock
+.local/
 
 # IDEs and editors
+.vscode/*
+!.vscode/extensions.json
+.idea
 /.idea
 .project
 .classpath
@@ -55,38 +56,11 @@ lerna-debug.log*
 *.launch
 .settings/
 *.sublime-workspace
-
-# IDE - VSCode
-.vscode/*
-!.vscode/settings.json
-!.vscode/tasks.json
-!.vscode/launch.json
-!.vscode/extensions.json
-
-# dotenv environment variable files
-.env
-.env.development.local
-.env.test.local
-.env.production.local
-.env.local
-
-# temp directory
-.temp
-.tmp
-
-# Runtime data
-pids
-*.pid
-*.seed
-*.pid.lock
-
-# Diagnostic reports (https://nodejs.org/api/report.html)
-report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
->>>>>>> a51eb7f5b6fd6a0a6526bfe34c767a21a44100db
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
+*.sw?
 
 # Workspace outputs and private study notes
-**/node_modules/
-**/dist/
-**/coverage/
-.local/
 Local_Intelligence_Community_Distress_PRD_v1(1).docx

@@ -1,7 +1,7 @@
 import { Report } from '../../reports/entities/report.entity.js';
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, FindOptionsWhere } from 'typeorm';
+import { Repository } from 'typeorm';
 import { User } from '../entities/user.entity.js';
 import { UserRole, AccountStatus } from '../interfaces/identity.interface.js';
 

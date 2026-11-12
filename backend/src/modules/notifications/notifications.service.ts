@@ -1,10 +1,11 @@
 import { EntityManager } from 'typeorm';
 import { Report } from '../reports/entities/report.entity.js';
 import { NotificationDelivery } from './entities/notification-delivery.entity.js';
-import { Injectable, Logger } from '@nestjs/common';
-import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, In } from 'typeorm';
-import { NotificationSubscription } from './entities/notification-subscription.entity.js';
+import {
+  BadRequestException,
+  Injectable,
+  Logger,
+} from '@nestjs/common';
 import { NotificationsRepository } from './repositories/notifications.repository.js';
 import {
   CreateNotificationSubscriptionDto,
@@ -12,8 +13,6 @@ import {
 } from './dto/create-notification-subscription.dto.js';
 import { UpdateNotificationSubscriptionDto } from './dto/update-notification-subscription.dto.js';
 import {
-  CreateNotificationDeliveryDto,
-  UpdateNotificationDeliveryDto,
   DeliveryChannel,
   DeliveryState,
   NotificationDeliveryFilterDto,
@@ -87,12 +86,17 @@ export class NotificationsService {
     userId: string,
     dto: CreateNotificationSubscriptionDto,
   ): Promise<NotificationSubscriptionResponseDto> {
+    this.assertQuietHours(dto.quietHours);
+    const { latitude, longitude } = this.resolveCoordinates(
+      dto.latitude,
+      dto.longitude,
+    );
     const subscription = await this.notificationsRepository.upsertSubscription({
       userId,
       category: dto.category,
       areaOrRadius: dto.areaOrRadius,
-      latitude: dto.latitude ?? 6.5244,
-      longitude: dto.longitude ?? 3.3792,
+      latitude,
+      longitude,
       priorityThreshold: dto.priorityThreshold ?? 'normal',
       quietHours: dto.quietHours,
     });
@@ -131,11 +135,19 @@ export class NotificationsService {
     );
     if (!existing) return null;
 
+    this.assertQuietHours(dto.quietHours);
+    const { latitude, longitude } = this.resolveCoordinates(
+      dto.latitude ?? existing.latitude,
+      dto.longitude ?? existing.longitude,
+    );
+
     const updated = await this.notificationsRepository.upsertSubscription({
       ...existing,
       ...dto,
       userId,
       category,
+      latitude,
+      longitude,
     });
     return new NotificationSubscriptionResponseDto(updated);
   }
@@ -212,6 +224,7 @@ export class NotificationsService {
           deliveryState: DeliveryState.QUEUED,
           timestamps: { enqueuedAt: new Date() },
           costMetadata: {},
+          payload: { title, body, ...data },
         });
 
         results.push({
@@ -330,11 +343,7 @@ export class NotificationsService {
   async filterDeliveries(
     filters: NotificationDeliveryFilterDto,
   ): Promise<{ data: NotificationDelivery[]; total: number }> {
-    // This would be implemented with query builder for pagination
-    // For now, use repository method
-    const allDeliveries =
-      await this.notificationsRepository.filterDeliveries(filters);
-    return { data: allDeliveries, total: allDeliveries.length };
+    return this.notificationsRepository.filterDeliveries(filters);
   }
 
   async getDeliveryStats(since?: Date): Promise<Record<string, number>> {
@@ -352,10 +361,41 @@ export class NotificationsService {
     return providers[channel] ?? 'unknown';
   }
 
+  private resolveCoordinates(latitude?: number, longitude?: number) {
+    if ((latitude === undefined) !== (longitude === undefined)) {
+      throw new BadRequestException(
+        'Latitude and longitude must be supplied together.',
+      );
+    }
+    return {
+      latitude: latitude ?? 6.5244,
+      longitude: longitude ?? 3.3792,
+    };
+  }
+
+  private assertQuietHours(quietHours?: QuietHoursDto) {
+    if (quietHours && !NotificationsService.validateQuietHours(quietHours)) {
+      throw new BadRequestException(
+        'Quiet hours must use HH:MM times and valid weekdays.',
+      );
+    }
+  }
+
   // Helper to validate quiet hours format
   static validateQuietHours(quietHours: QuietHoursDto): boolean {
-    if (!quietHours?.start || !quietHours?.end) return true;
+    if (!quietHours) return true;
+    if (!quietHours.start || !quietHours.end) return false;
     const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;
+    const days = [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ];
+    if (quietHours.days?.some((day) => !days.includes(day))) return false;
     return timeRegex.test(quietHours.start) && timeRegex.test(quietHours.end);
   }
 }

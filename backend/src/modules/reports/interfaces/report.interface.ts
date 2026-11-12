@@ -20,6 +20,20 @@ export enum ReportState {
   REMOVED = 'removed',
 }
 
+export const PUBLIC_REPORT_STATES: ReportState[] = [
+  ReportState.UNVERIFIED,
+  ReportState.CORROBORATED,
+  ReportState.VERIFIED,
+  ReportState.DISPUTED,
+  ReportState.RESOLVED,
+];
+
+export const VOTABLE_REPORT_STATES: ReportState[] = [
+  ReportState.UNVERIFIED,
+  ReportState.CORROBORATED,
+  ReportState.DISPUTED,
+];
+
 export enum LocationPrecision {
   EXACT = 'exact',
   APPROXIMATE = 'approximate',

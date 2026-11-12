@@ -14,9 +14,17 @@ import {
   UpdateReportDto,
   ConfirmationDto,
 } from '../dto/create-report.dto.js';
-import { ReportState } from '../interfaces/report.interface.js';
+import {
+  PUBLIC_REPORT_STATES,
+  ReportState,
+  VOTABLE_REPORT_STATES,
+} from '../interfaces/report.interface.js';
 import type { FeedQueryParams } from '../interfaces/report.interface.js';
 import { NotificationsService } from '../../notifications/notifications.service.js';
+import {
+  PostcodeAreaDetails,
+  PostcodeService,
+} from '../../postcode/postcode.service.js';
 
 @Injectable()
 export class ReportsService {
@@ -25,6 +33,7 @@ export class ReportsService {
     private readonly repository: ReportsRepository,
     private readonly db: DataSource,
     private readonly notifications: NotificationsService,
+    private readonly postcode: PostcodeService,
   ) {}
 
   async createReport(userId: string, dto: CreateReportDto) {
@@ -33,12 +42,13 @@ export class ReportsService {
         'Description needs at least 10 non-padding characters.',
       );
     if (dto.evidenceReferences?.length)
-      throw new BadRequestException(
-        'Evidence uploads are not enabled in the local demo.',
-      );
+      this.assertEvidenceReferences(dto.evidenceReferences);
     const observedAt = dto.observedAt ? new Date(dto.observedAt) : new Date();
     if (observedAt.getTime() > Date.now() + 60000)
       throw new BadRequestException('Observed time cannot be in the future.');
+    const postcode = dto.location.postcode
+      ? await this.postcode.validateForReport(dto.location.postcode)
+      : null;
     const report = await this.db.transaction(async (manager) => {
       const report = await manager.save(
         Report,
@@ -53,7 +63,7 @@ export class ReportsService {
           },
           locationPrecision: 'approximate',
           evidenceReferences: [],
-          metadata: { areaName: dto.location.areaName || 'Selected area' },
+          metadata: this.buildMetadata(dto.location, postcode),
           state: ReportState.UNVERIFIED,
         }),
       );
@@ -65,7 +75,10 @@ export class ReportsService {
 
   async getReport(id: string) {
     const report = await this.repository.findById(id);
-    if (!report || report.state === ReportState.REMOVED)
+    if (
+      !report ||
+      !PUBLIC_REPORT_STATES.includes(report.state as ReportState)
+    )
       throw new NotFoundException('Report not found');
     return this.present(report);
   }
@@ -75,17 +88,23 @@ export class ReportsService {
       throw new BadRequestException(
         'Latitude and longitude must be supplied together.',
       );
+    const reports = await this.repository.findForFeed(params);
+    const counts = await this.repository.countVerifiedByReporterIds([
+      ...new Set(reports.map((report) => report.reporterId)),
+    ]);
     return Promise.all(
-      (await this.repository.findForFeed(params)).map((report) =>
-        this.present(report),
+      reports.map((report) =>
+        this.present(report, counts.get(report.reporterId) ?? 0),
       ),
     );
   }
 
-  private async present(report: Report) {
-    const verifiedReports = await this.reports.count({
-      where: { reporterId: report.reporterId, state: ReportState.VERIFIED },
-    });
+  private async present(report: Report, verifiedReportCount?: number) {
+    const verifiedReports =
+      verifiedReportCount ??
+      (await this.reports.count({
+        where: { reporterId: report.reporterId, state: ReportState.VERIFIED },
+      }));
     return {
       id: report.id,
       category: report.category,
@@ -94,6 +113,7 @@ export class ReportsService {
       observedAt: report.observedAt,
       submittedAt: report.submittedAt,
       areaName: report.metadata?.areaName || 'Lagos',
+      postcode: report.metadata?.postcode || undefined,
       locationPrecision: report.locationPrecision,
       coordinates: {
         type: 'Point',
@@ -113,6 +133,51 @@ export class ReportsService {
     };
   }
 
+  private assertEvidenceReferences(references: string[]) {
+    if (references.length > 10)
+      throw new BadRequestException(
+        'A report can reference at most 10 evidence items.',
+      );
+    for (const reference of references) {
+      const trimmed = reference.trim();
+      if (!trimmed || trimmed.length > 500)
+        throw new BadRequestException(
+          'Evidence references must be 1-500 characters.',
+        );
+    }
+  }
+
+  private buildMetadata(
+    location: { areaName?: string },
+    postcode: {
+      postcode: string;
+      display: string;
+      source: string;
+      area: PostcodeAreaDetails | null;
+    } | null,
+  ) {
+    const area =
+      postcode?.area?.localityName ||
+      postcode?.area?.lgaName ||
+      location.areaName ||
+      'Selected area';
+    return {
+      areaName: area,
+      ...(postcode && {
+        postcode: postcode.postcode,
+        postcodeDisplay: postcode.display,
+        postcodeSource: postcode.source,
+        ...(postcode.area?.stateName && {
+          stateName: postcode.area.stateName,
+        }),
+        ...(postcode.area?.lgaName && { lgaName: postcode.area.lgaName }),
+        ...(postcode.area?.localityName && {
+          localityName: postcode.area.localityName,
+        }),
+      }),
+    };
+  }
+
   async updateReport(userId: string, id: string, dto: UpdateReportDto) {
     const report = await this.reports.findOneBy({ id });
     if (!report) throw new NotFoundException('Report not found');
@@ -122,24 +187,26 @@ export class ReportsService {
       throw new BadRequestException(
         'Reviewed reports cannot be edited. Submit an update as a new report.',
       );
-    if (dto.description && dto.description.trim().length < 10)
+    if (dto.description !== undefined && dto.description.trim().length < 10)
       throw new BadRequestException(
         'Description needs at least 10 non-padding characters.',
       );
     if (dto.evidenceReferences?.length)
-      throw new BadRequestException(
-        'Evidence uploads are not enabled in the local demo.',
-      );
-    if (dto.description) report.description = dto.description.trim();
+      this.assertEvidenceReferences(dto.evidenceReferences);
+    if (dto.description !== undefined)
+      report.description = dto.description.trim();
     if (dto.category) report.category = dto.category;
     if (dto.location) {
+      const postcode = dto.location.postcode
+        ? await this.postcode.validateForReport(dto.location.postcode)
+        : null;
       report.coordinatesOrArea = {
         type: 'Point',
         coordinates: [dto.location.longitude, dto.location.latitude],
       };
       report.metadata = {
         ...report.metadata,
-        areaName: dto.location.areaName || 'Selected area',
+        ...this.buildMetadata(dto.location, postcode),
       };
     }
     if (dto.observedAt) {
@@ -165,9 +232,7 @@ export class ReportsService {
       if (report.reporterId === userId)
         throw new ForbiddenException('You cannot vote on your own report.');
       if (
-        [ReportState.REMOVED, ReportState.RESOLVED, ReportState.STALE].includes(
-          report.state as ReportState,
-        )
+        !VOTABLE_REPORT_STATES.includes(report.state as ReportState)
       )
         throw new BadRequestException('This report is closed for voting.');
       const key = { userId, reportIdOrIncidentId: dto.reportId };

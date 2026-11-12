@@ -55,6 +55,7 @@ export default function Dashboard() {
     category: 'traffic',
     description: '',
     observedAt: '',
+    postcode: '',
   });
   const [reason, setReason] = useState('');
   const [initialized, setInitialized] = useState(false);
@@ -143,13 +144,23 @@ export default function Dashboard() {
         body: {
           category: form.category,
           description: form.description,
-          location: { ...AREAS[area], areaName: area, radius: 1000 },
+          location: {
+            ...AREAS[area],
+            areaName: area,
+            radius: 1000,
+            ...(form.postcode.trim() ? { postcode: form.postcode.trim() } : {}),
+          },
           ...(form.observedAt
             ? { observedAt: new Date(form.observedAt).toISOString() }
             : {}),
         },
       });
-      setForm({ category: 'traffic', description: '', observedAt: '' });
+      setForm({
+        category: 'traffic',
+        description: '',
+        observedAt: '',
+        postcode: '',
+      });
       setSelected(report);
       setTab('Nearby');
     }, 'Report saved. It starts as unverified until independent review.');
@@ -238,6 +249,12 @@ export default function Dashboard() {
           <span className="text-xs font-bold uppercase tracking-wider text-ink-soft">
             {report.category} |{' '}
             {report.areaName || report.metadata?.areaName || 'Lagos'}
+            {report.postcode && (
+              <span className="font-mono normal-case">
+                {' '}
+                | postcode {report.postcode}
+              </span>
+            )}
           </span>
           <Badge state={report.state} />
         </div>
@@ -549,6 +566,22 @@ export default function Dashboard() {
                   />
                 </label>
                 <label className="block text-sm font-bold">
+                  NIPOST postcode{' '}
+                  <span className="font-normal text-ink-soft">
+                    (optional — pins this report to a building)
+                  </span>
+                  <input
+                    className={`${field} mt-2 font-mono uppercase`}
+                    value={form.postcode}
+                    onChange={(e) =>
+                      setForm({ ...form, postcode: e.target.value })
+                    }
+                    placeholder="e.g. EK 01 A03 FK 01"
+                    pattern="[A-Za-z]{2}[\s-]?\d{2}[\s-]?[A-Za-z0-9]{3}[\s-]?[A-Za-z]{2}[\s-]?\d{2}"
+                    title="Five-segment NIPOST code, e.g. EK 01 A03 FK 01"
+                  />
+                </label>
+                <label className="block text-sm font-bold">
                   Observed time{' '}
                   <span className="font-normal text-ink-soft">
                     (leave blank for now)
@@ -564,6 +597,9 @@ export default function Dashboard() {
                 </label>
                 <div className="rounded-xl bg-primary-soft p-4 text-sm">
                   Public preview: {area} | approximate area centre |{' '}
+                  {form.postcode.trim()
+                    ? `postcode ${form.postcode.trim().toUpperCase()} | `
+                    : ''}
                   {form.category} | Unverified
                 </div>
                 <button disabled={busy} className="btn-primary">

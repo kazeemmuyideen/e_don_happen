@@ -17,25 +17,24 @@ import {
   UseGuards,
   ForbiddenException,
   NotFoundException,
+  DefaultValuePipe,
+  ParseIntPipe,
 } from '@nestjs/common';
 import {
   ApiTags,
   ApiOperation,
   ApiResponse,
-  ApiParam,
   ApiQuery,
 } from '@nestjs/swagger';
 import { NotificationsService } from './notifications.service.js';
-import type { EnqueueNotificationParams } from './notifications.service.js';
+import { EnqueueNotificationDto } from './dto/enqueue-notification.dto.js';
 import { CreateNotificationSubscriptionDto } from './dto/create-notification-subscription.dto.js';
 import { UpdateNotificationSubscriptionDto } from './dto/update-notification-subscription.dto.js';
 import { NotificationSubscriptionResponseDto } from './dto/notification-subscription-response.dto.js';
 import {
-  CreateNotificationDeliveryDto,
-  UpdateNotificationDeliveryDto,
-  DeliveryChannel,
-  DeliveryState,
   NotificationDeliveryFilterDto,
+  ProviderResponseDto,
+  MarkDeliveryFailedDto,
 } from './dto/notification-delivery.dto.js';
 import { NotificationDelivery } from './entities/notification-delivery.entity.js';
 
@@ -125,7 +124,7 @@ export class NotificationsController {
   @Post('enqueue')
   @ApiOperation({ summary: 'Enqueue notifications for an incident/SOS' })
   @ApiResponse({ status: 201, description: 'Notifications enqueued' })
-  async enqueueNotification(@Body() params: EnqueueNotificationParams) {
+  async enqueueNotification(@Body() params: EnqueueNotificationDto) {
     return this.notificationsService.enqueueNotification(params);
   }
 
@@ -135,7 +134,7 @@ export class NotificationsController {
   @ApiQuery({ name: 'limit', required: false, type: Number })
   @ApiResponse({ status: 200, type: [NotificationDelivery] })
   async getPendingDeliveries(
-    @Query('limit') limit?: number,
+    @Query('limit', new DefaultValuePipe(100), ParseIntPipe) limit?: number,
   ): Promise<NotificationDelivery[]> {
     return this.notificationsService.getPendingDeliveries(limit ?? 100);
   }
@@ -182,7 +181,7 @@ export class NotificationsController {
   @ApiResponse({ status: 200, type: NotificationDelivery })
   async markSent(
     @Param('id') id: string,
-    @Body() body: { providerResponse?: any },
+    @Body() body: ProviderResponseDto,
   ) {
     return this.notificationsService.markDeliverySent(
       id,
@@ -195,7 +194,7 @@ export class NotificationsController {
   @ApiResponse({ status: 200, type: NotificationDelivery })
   async markDelivered(
     @Param('id') id: string,
-    @Body() body: { providerResponse?: any },
+    @Body() body: ProviderResponseDto,
   ) {
     return this.notificationsService.markDeliveryDelivered(
       id,
@@ -208,7 +207,7 @@ export class NotificationsController {
   @ApiResponse({ status: 200, type: NotificationDelivery })
   async markFailed(
     @Param('id') id: string,
-    @Body() body: { error: string; willRetry: boolean },
+    @Body() body: MarkDeliveryFailedDto,
   ) {
     return this.notificationsService.markDeliveryFailed(
       id,
@@ -229,11 +228,11 @@ export class NotificationsController {
   @ApiQuery({ name: 'maxAttempts', required: false, type: Number })
   @ApiResponse({ status: 200, description: 'Number of deliveries retried' })
   async retryFailedDeliveries(
-    @Query('maxAttempts') maxAttempts?: number,
+    @Query('maxAttempts', new DefaultValuePipe(3), ParseIntPipe)
+    maxAttempts?: number,
   ): Promise<{ retried: number }> {
-    const retried = await this.notificationsService.retryFailedDeliveries(
-      maxAttempts ?? 3,
-    );
+    const retried =
+      await this.notificationsService.retryFailedDeliveries(maxAttempts ?? 3);
     return { retried };
   }
 

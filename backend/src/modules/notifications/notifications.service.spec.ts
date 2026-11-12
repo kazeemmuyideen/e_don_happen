@@ -4,8 +4,6 @@ import {
   EnqueueNotificationParams,
 } from './notifications.service.js';
 import { NotificationsRepository } from './repositories/notifications.repository.js';
-import { NotificationSubscription } from './entities/notification-subscription.entity.js';
-import { NotificationDelivery } from './entities/notification-delivery.entity.js';
 import {
   CreateNotificationSubscriptionDto,
   NotificationPriority,
@@ -13,7 +11,6 @@ import {
 import {
   DeliveryChannel,
   DeliveryState,
-  NotificationDeliveryFilterDto,
 } from './dto/notification-delivery.dto.js';
 import { NotificationSubscriptionResponseDto } from './dto/notification-subscription-response.dto.js';
 
@@ -81,6 +78,16 @@ describe('NotificationsService', () => {
       });
       expect(result).toBeInstanceOf(NotificationSubscriptionResponseDto);
       expect(result.category).toBe(dto.category);
+    });
+
+    it('should reject partial coordinates on create', async () => {
+      await expect(
+        service.createSubscription(mockUserId, {
+          category: 'flooding',
+          areaOrRadius: 5,
+          latitude: 6.9,
+        } as any),
+      ).rejects.toThrow('Latitude and longitude must be supplied together.');
     });
 
     it('should create subscription with quiet hours', async () => {
@@ -165,6 +172,8 @@ describe('NotificationsService', () => {
         userId: mockUserId,
         category: mockCategory,
         areaOrRadius: 5,
+        latitude: 6.5244,
+        longitude: 3.3792,
       };
       const dto: Partial<CreateNotificationSubscriptionDto> = {
         areaOrRadius: 10,
@@ -185,6 +194,33 @@ describe('NotificationsService', () => {
         userId: mockUserId,
         category: mockCategory,
       });
+      expect(result?.areaOrRadius).toBe(10);
+    });
+
+    it('should default coordinates when the stored subscription has none', async () => {
+      const existing = {
+        userId: mockUserId,
+        category: mockCategory,
+        areaOrRadius: 5,
+      };
+      repository.findSubscription.mockResolvedValue(existing as any);
+      repository.upsertSubscription.mockResolvedValue({
+        ...existing,
+        areaOrRadius: 10,
+        latitude: 6.5244,
+        longitude: 3.3792,
+      } as any);
+
+      const result = await service.updateSubscription(mockUserId, mockCategory, {
+        areaOrRadius: 10,
+      });
+
+      expect(repository.upsertSubscription).toHaveBeenCalledWith(
+        expect.objectContaining({
+          latitude: 6.5244,
+          longitude: 3.3792,
+        }),
+      );
       expect(result?.areaOrRadius).toBe(10);
     });
 
@@ -275,6 +311,14 @@ describe('NotificationsService', () => {
         params.longitude,
         params.priority,
       );
+      expect(repository.createDelivery).toHaveBeenCalledWith(
+        expect.objectContaining({
+          payload: expect.objectContaining({
+            title: 'Flood Alert',
+            body: 'Heavy flooding reported',
+          }),
+        }),
+      );
       expect(results).toHaveLength(4);
       expect(results.every((r) => r.status === 'enqueued')).toBe(true);
     });
@@ -351,6 +395,12 @@ describe('NotificationsService', () => {
       expect(repository.createDelivery).toHaveBeenCalledWith(
         expect.objectContaining({ channel: DeliveryChannel.PUSH }),
       );
+      expect(results).toHaveLength(1);
+      expect(results[0]).toMatchObject({
+        channel: DeliveryChannel.PUSH,
+        recipientId: 'user-1',
+        status: 'enqueued',
+      });
     });
   });
 
@@ -430,6 +480,7 @@ describe('NotificationsService', () => {
           deliveryState: DeliveryState.QUEUED,
         }),
       );
+      expect(result?.attempt).toBe(2);
     });
 
     it('should mark as failed when max attempts reached', async () => {
@@ -452,6 +503,7 @@ describe('NotificationsService', () => {
           deliveryState: DeliveryState.FAILED,
         }),
       );
+      expect(result?.deliveryState).toBe(DeliveryState.FAILED);
     });
   });
 
@@ -547,11 +599,29 @@ describe('NotificationsService', () => {
       ).toBe(false);
     });
 
+    it('should return false for invalid weekdays', () => {
+      expect(
+        NotificationsService.validateQuietHours({
+          start: '22:00',
+          end: '07:00',
+          days: ['Funday'],
+        }),
+      ).toBe(false);
+    });
+
     it('should return true when quiet hours not provided', () => {
-      expect(NotificationsService.validateQuietHours({})).toBe(true);
-      expect(NotificationsService.validateQuietHours({ start: '22:00' })).toBe(
-        true,
-      );
+      expect(NotificationsService.validateQuietHours(undefined)).toBe(true);
+      expect(NotificationsService.validateQuietHours(null as any)).toBe(true);
+    });
+
+    it('should return false for partial quiet hours', () => {
+      expect(NotificationsService.validateQuietHours({})).toBe(false);
+      expect(
+        NotificationsService.validateQuietHours({ start: '22:00' } as any),
+      ).toBe(false);
+      expect(
+        NotificationsService.validateQuietHours({ end: '07:00' } as any),
+      ).toBe(false);
     });
   });
 });

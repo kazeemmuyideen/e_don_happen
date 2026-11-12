@@ -20,6 +20,12 @@ const db = new pg.Client({
   database: process.env.DB_NAME,
 });
 const users = [];
+const createdIncidentIds = [];
+const createdCommunityIds = [];
+const createdSubscriptionIds = [];
+const createdSosIds = [];
+const PNG_BASE64 =
+  'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mNkYAAAAAYAAjCB0C8AAAAASUVORK5CYII=';
 const otpFile = resolve('.local/test-otps.json');
 let backend;
 let serverLog = '';
@@ -97,9 +103,29 @@ after(async () => {
   }
   if (users.length) {
     await db.query(
-      'DELETE FROM notification_deliveries WHERE recipient = ANY($1::uuid[]) OR incident_id_or_sos_id IN (SELECT id FROM reports WHERE reporter_id = ANY($1::uuid[]))',
+      'DELETE FROM notification_deliveries WHERE recipient = ANY($1::uuid[]) OR incident_id_or_sos_id IN (SELECT id FROM reports WHERE reporter_id = ANY($1::uuid[])) OR incident_id_or_sos_id IN (SELECT id FROM sos_requests WHERE requester_id = ANY($1::uuid[]))',
       [users],
     );
+    await db.query(
+      'DELETE FROM sos_recipients WHERE recipient_id = ANY($1::uuid[]) OR sos_id IN (SELECT id FROM sos_requests WHERE requester_id = ANY($1::uuid[]))',
+      [users],
+    );
+    await db.query(
+      'DELETE FROM sos_requests WHERE requester_id = ANY($1::uuid[])',
+      [users],
+    );
+    await db.query(
+      'DELETE FROM evidence_assets WHERE report_id IN (SELECT id FROM reports WHERE reporter_id = ANY($1::uuid[]))',
+      [users],
+    );
+    await db.query(
+      'DELETE FROM incident_report_links WHERE linked_by = ANY($1::uuid[]) OR report_id IN (SELECT id FROM reports WHERE reporter_id = ANY($1::uuid[]))',
+      [users],
+    );
+    if (createdIncidentIds.length)
+      await db.query('DELETE FROM incidents WHERE id = ANY($1::uuid[])', [
+        createdIncidentIds,
+      ]);
     await db.query(
       'DELETE FROM moderation_actions WHERE actor_id = ANY($1::uuid[]) OR target_id IN (SELECT id FROM reports WHERE reporter_id = ANY($1::uuid[]))',
       [users],
@@ -111,6 +137,22 @@ after(async () => {
     await db.query('DELETE FROM reports WHERE reporter_id = ANY($1::uuid[])', [
       users,
     ]);
+    if (createdSubscriptionIds.length)
+      await db.query('DELETE FROM subscriptions WHERE id = ANY($1::uuid[])', [
+        createdSubscriptionIds,
+      ]);
+    await db.query(
+      'DELETE FROM subscriptions WHERE organisation_or_community_id = ANY($1::uuid[])',
+      [createdCommunityIds],
+    );
+    await db.query(
+      'DELETE FROM responders WHERE user_id = ANY($1::uuid[]) OR community_id = ANY($2::uuid[])',
+      [users, createdCommunityIds],
+    );
+    await db.query(
+      'DELETE FROM communities WHERE admin_id = ANY($1::uuid[]) OR id = ANY($2::uuid[])',
+      [users, createdCommunityIds],
+    );
     await db.query(
       'DELETE FROM notification_subscriptions WHERE user_id = ANY($1::uuid[])',
       [users],
@@ -228,6 +270,71 @@ test('frontend-facing API journey and trust boundaries', async (t) => {
     assert.equal((await call('/reports?limit=-1')).status, 400);
     assert.equal((await call('/reports?latitude=6.5')).status, 400);
   });
+  await t.test(
+    'postcodes are normalized, validated and rejected when malformed',
+    async () => {
+      const created = await call('/reports', {
+        token: author.token,
+        method: 'POST',
+        body: {
+          category: 'traffic',
+          description: 'Integration test: congestion near a specific building.',
+          location: {
+            ...location,
+            postcode: 'fc 02 a09 db 09',
+          },
+        },
+      });
+      assert.equal(
+        created.status,
+        201,
+        JSON.stringify(created.data) + '\n' + serverLog,
+      );
+      assert.equal(created.data.postcode, 'FC02A09DB09');
+      const stored = await db.query(
+        'SELECT metadata FROM reports WHERE id = $1',
+        [created.data.id],
+      );
+      assert.equal(stored.rows[0].metadata.postcode, 'FC02A09DB09');
+      assert.equal(stored.rows[0].metadata.postcodeSource, 'format');
+
+      const malformed = await call('/reports', {
+        token: author.token,
+        method: 'POST',
+        body: {
+          category: 'traffic',
+          description: 'Integration test: postcode with wrong segment count.',
+          location: { ...location, postcode: 'FC-02-A09' },
+        },
+      });
+      assert.equal(malformed.status, 400);
+
+      const updated = await call(`/reports/${created.data.id}`, {
+        token: author.token,
+        method: 'PUT',
+        body: {
+          location: { ...location, postcode: 'ek-01-a03-fk-01' },
+        },
+      });
+      assert.equal(updated.status, 200);
+      assert.equal(updated.data.postcode, 'EK01A03FK01');
+      const badUpdate = await call(`/reports/${created.data.id}`, {
+        token: author.token,
+        method: 'PUT',
+        body: {
+          location: { ...location, postcode: 'XX-9Z-A0' },
+        },
+      });
+      assert.equal(badUpdate.status, 400);
+
+      const badLevel = await call(
+        '/postcode/lookup?code=FC-02-A09-DB-09&level=9',
+      );
+      assert.equal(badLevel.status, 400);
+      const badReverse = await call('/postcode/reverse?lat=99&lng=0');
+      assert.equal(badReverse.status, 400);
+    },
+  );
   await t.test(
     'report creation persists an unverified public report',
     async () => {
@@ -461,4 +568,322 @@ test('frontend-facing API journey and trust boundaries', async (t) => {
       );
     },
   );
+});
+
+test('community safety, SOS, evidence, incidents, billing and analytics', async (t) => {
+  const admin = await login();
+  const responder = await login();
+  const resident = await login();
+  const mod = await login();
+  await db.query("UPDATE users SET role = 'moderator' WHERE id = $1", [
+    mod.user.id,
+  ]);
+  const polygon = {
+    type: 'Polygon',
+    coordinates: [
+      [
+        [3.37, 6.51],
+        [3.38, 6.51],
+        [3.38, 6.52],
+        [3.37, 6.52],
+        [3.37, 6.51],
+      ],
+    ],
+  };
+  const location = { latitude: 6.515, longitude: 3.375, areaName: 'Yaba' };
+  let community;
+
+  await t.test('community creation validates geometry and promotes admin', async () => {
+    const invalid = await call('/communities', {
+      token: admin.token,
+      method: 'POST',
+      body: {
+        name: 'Bad boundary',
+        boundary: {
+          type: 'Polygon',
+          coordinates: [
+            [
+              [3.37, 6.51],
+              [3.38, 6.51],
+              [3.38, 6.52],
+            ],
+          ],
+        },
+      },
+    });
+    assert.equal(invalid.status, 400);
+
+    const created = await call('/communities', {
+      token: admin.token,
+      method: 'POST',
+      body: { name: 'E2E Yaba', boundary: polygon },
+    });
+    assert.equal(
+      created.status,
+      201,
+      JSON.stringify(created.data) + '\n' + serverLog,
+    );
+    community = created.data;
+    createdCommunityIds.push(community.id);
+    assert.equal(community.adminId, admin.user.id);
+    assert.equal(
+      (await call('/auth/profile', { token: admin.token })).data.role,
+      'community_admin',
+    );
+  });
+
+  await t.test('community admin manages responders', async () => {
+    const added = await call(`/communities/${community.id}/responders`, {
+      token: admin.token,
+      method: 'POST',
+      body: { userId: responder.user.id, coverageArea: polygon },
+    });
+    assert.equal(
+      added.status,
+      201,
+      JSON.stringify(added.data) + '\n' + serverLog,
+    );
+    assert.equal(added.data.responders.length, 1);
+    assert.equal(
+      (await call('/auth/profile', { token: responder.token })).data.role,
+      'responder',
+    );
+    const forbidden = await call(
+      `/communities/${community.id}/responders`,
+      {
+        token: resident.token,
+        method: 'POST',
+        body: { userId: resident.user.id },
+      },
+    );
+    assert.equal(forbidden.status, 403);
+  });
+
+  await t.test('SOS fans out to nearby responders and the community admin', async () => {
+    const created = await call('/sos', {
+      token: resident.token,
+      method: 'POST',
+      body: {
+        incidentType: 'medical',
+        latitude: location.latitude,
+        longitude: location.longitude,
+        message: 'Need urgent help near the market.',
+      },
+    });
+    assert.equal(
+      created.status,
+      201,
+      JSON.stringify(created.data) + '\n' + serverLog,
+    );
+    createdSosIds.push(created.data.id);
+    const recipientIds = created.data.recipients.map((r) => r.recipientId);
+    assert.ok(recipientIds.includes(responder.user.id));
+    assert.ok(recipientIds.includes(admin.user.id));
+    assert.ok(!recipientIds.includes(resident.user.id));
+
+    const assigned = await call('/sos/assigned', { token: responder.token });
+    assert.ok(assigned.data.some((sos) => sos.id === created.data.id));
+
+    const acknowledged = await call(`/sos/${created.data.id}/acknowledge`, {
+      token: responder.token,
+      method: 'PUT',
+      body: { note: 'On the way' },
+    });
+    assert.equal(acknowledged.status, 200);
+    assert.equal(acknowledged.data.state, 'acknowledged');
+
+    const selfAck = await call(`/sos/${created.data.id}/acknowledge`, {
+      token: resident.token,
+      method: 'PUT',
+      body: {},
+    });
+    assert.equal(selfAck.status, 403);
+
+    const resolved = await call(`/sos/${created.data.id}/state`, {
+      token: resident.token,
+      method: 'PUT',
+      body: { state: 'resolved', reason: 'help arrived' },
+    });
+    assert.equal(resolved.status, 200);
+    assert.equal(resolved.data.state, 'resolved');
+  });
+
+  await t.test('evidence is moderated before other residents can see it', async () => {
+    const report = await call('/reports', {
+      token: resident.token,
+      method: 'POST',
+      body: {
+        category: 'community',
+        description: 'Integration test: blocked drain near the market.',
+        location,
+      },
+    });
+    assert.equal(report.status, 201);
+
+    const upload = await call(`/reports/${report.data.id}/evidence`, {
+      token: resident.token,
+      method: 'POST',
+      body: {
+        fileName: 'drain.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+      },
+    });
+    assert.equal(
+      upload.status,
+      201,
+      JSON.stringify(upload.data) + '\n' + serverLog,
+    );
+    assert.equal(upload.data.moderationState, 'pending');
+
+    const hidden = await call(`/reports/${report.data.id}/evidence`, {
+      token: responder.token,
+    });
+    assert.equal(hidden.data.length, 0);
+
+    const approved = await call(`/evidence/${upload.data.id}/moderation`, {
+      token: mod.token,
+      method: 'PUT',
+      body: { moderationState: 'approved', reason: 'clear image' },
+    });
+    assert.equal(
+      approved.status,
+      200,
+      JSON.stringify(approved.data) + '\n' + serverLog,
+    );
+
+    const visible = await call(`/reports/${report.data.id}/evidence`, {
+      token: responder.token,
+    });
+    assert.equal(visible.data.length, 1);
+
+    const file = await fetch(base + `/evidence/${upload.data.id}/file`, {
+      headers: { Authorization: `Bearer ${responder.token}` },
+    });
+    assert.equal(file.status, 200);
+    assert.match(file.headers.get('content-type'), /^image\/png/);
+    assert.ok((await file.arrayBuffer()).byteLength > 0);
+  });
+
+  await t.test('moderators group reports into incidents and verify them', async () => {
+    const reports = [];
+    for (let i = 0; i < 2; i++) {
+      const created = await call('/reports', {
+        token: resident.token,
+        method: 'POST',
+        body: {
+          category: 'community',
+          description: `Integration test: market drain overflow ${i + 1}.`,
+          location,
+        },
+      });
+      assert.equal(created.status, 201);
+      reports.push(created.data.id);
+    }
+
+    const forbidden = await call('/incidents', {
+      token: resident.token,
+      method: 'POST',
+      body: {
+        canonicalCategory: 'flooding',
+        summary: 'Resident should not create incidents.',
+        latitude: location.latitude,
+        longitude: location.longitude,
+      },
+    });
+    assert.equal(forbidden.status, 403);
+
+    const incident = await call('/incidents', {
+      token: mod.token,
+      method: 'POST',
+      body: {
+        canonicalCategory: 'flooding',
+        summary: 'Market drain overflow affecting two streets.',
+        latitude: location.latitude,
+        longitude: location.longitude,
+        severity: 'High',
+        reportIds: reports,
+      },
+    });
+    assert.equal(
+      incident.status,
+      201,
+      JSON.stringify(incident.data) + '\n' + serverLog,
+    );
+    createdIncidentIds.push(incident.data.id);
+    assert.equal(incident.data.reportLinks.length, 2);
+
+    const verified = await call(`/incidents/${incident.data.id}/verification`, {
+      token: mod.token,
+      method: 'PUT',
+      body: { verificationState: 'Verified' },
+    });
+    assert.equal(verified.data.verificationState, 'Verified');
+
+    const listed = await call('/incidents?category=flooding', {
+      token: resident.token,
+    });
+    assert.ok(listed.data.items.some((item) => item.id === incident.data.id));
+  });
+
+  await t.test('community billing is admin-only and cancellable', async () => {
+    const forbidden = await call('/billing/subscriptions', {
+      token: resident.token,
+      method: 'POST',
+      body: { communityId: community.id, plan: 'premium' },
+    });
+    assert.equal(forbidden.status, 403);
+
+    const created = await call('/billing/subscriptions', {
+      token: admin.token,
+      method: 'POST',
+      body: {
+        communityId: community.id,
+        plan: 'premium',
+        billingReference: 'E2E-REF',
+      },
+    });
+    assert.equal(
+      created.status,
+      201,
+      JSON.stringify(created.data) + '\n' + serverLog,
+    );
+    createdSubscriptionIds.push(created.data.id);
+    assert.equal(created.data.status, 'active');
+    assert.ok(new Date(created.data.renewalDate) > new Date());
+
+    const cancelled = await call(
+      `/billing/subscriptions/${created.data.id}/cancel`,
+      { token: admin.token, method: 'PUT' },
+    );
+    assert.equal(cancelled.data.status, 'cancelled');
+  });
+
+  await t.test('analytics is moderator-only and summarises activity', async () => {
+    assert.equal(
+      (await call('/analytics/reports', { token: resident.token })).status,
+      403,
+    );
+    const reports = await call('/analytics/reports?sinceDays=1', {
+      token: mod.token,
+    });
+    assert.equal(reports.status, 200);
+    assert.ok(reports.data.total >= 3);
+    assert.ok(Array.isArray(reports.data.byState));
+
+    const incidents = await call('/analytics/incidents', { token: mod.token });
+    assert.ok(incidents.data.total >= 1);
+    const sos = await call('/analytics/sos?sinceDays=1', { token: mod.token });
+    assert.ok(sos.data.total >= 1);
+    assert.equal(
+      (await call('/analytics/audit-logs', { token: mod.token })).status,
+      403,
+    );
+  });
+
+  await t.test('health endpoint reports database connectivity', async () => {
+    const health = await call('/health');
+    assert.equal(health.status, 200);
+    assert.equal(health.data.database, 'up');
+  });
 });

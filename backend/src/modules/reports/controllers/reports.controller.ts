@@ -19,11 +19,6 @@ import {
   UpdateReportDto,
   ConfirmationDto,
 } from '../dto/create-report.dto.js';
-import type {
-  ReportCategory,
-  ReportState,
-  FeedQueryParams,
-} from '../interfaces/report.interface.js';
 
 @Controller('reports')
 export class ReportsController {

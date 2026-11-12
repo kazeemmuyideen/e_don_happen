@@ -1,14 +1,10 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository, QueryBuilder } from 'typeorm';
+import { Repository } from 'typeorm';
 import { NotificationsRepository } from './notifications.repository.js';
 import { NotificationSubscription } from '../entities/notification-subscription.entity.js';
 import { NotificationDelivery } from '../entities/notification-delivery.entity.js';
-import {
-  DeliveryChannel,
-  DeliveryState,
-  NotificationDeliveryFilterDto,
-} from '../dto/notification-delivery.dto.js';
+import { DeliveryChannel, DeliveryState } from '../dto/notification-delivery.dto.js';
 
 describe('NotificationsRepository', () => {
   let repository: NotificationsRepository;
@@ -36,7 +32,9 @@ describe('NotificationsRepository', () => {
       findOne: vi.fn(),
       create: vi.fn(),
       save: vi.fn(),
+      update: vi.fn(),
       delete: vi.fn(),
+      upsert: vi.fn(),
       createQueryBuilder: vi.fn().mockReturnValue(mockQueryBuilder),
     } as any;
 
@@ -130,19 +128,19 @@ describe('NotificationsRepository', () => {
   });
 
   describe('upsertSubscription', () => {
-    it('should update existing subscription', async () => {
-      const existing = {
+    it('should upsert and return the saved subscription', async () => {
+      const saved = {
         userId: mockUserId,
         category: mockCategory,
-        areaOrRadius: 5,
+        areaOrRadius: 10,
       };
-      const updated = { ...existing, areaOrRadius: 10 };
       vi.spyOn(repository, 'findSubscription').mockResolvedValue(
-        existing as any,
+        saved as any,
       );
-      (subscriptionRepo.save as ReturnType<typeof vi.fn>).mockResolvedValue(
-        updated as any,
-      );
+      (subscriptionRepo.upsert as ReturnType<typeof vi.fn>).mockResolvedValue({
+        raw: [],
+        generatedMaps: [],
+      });
 
       const result = await repository.upsertSubscription({
         userId: mockUserId,
@@ -150,42 +148,20 @@ describe('NotificationsRepository', () => {
         areaOrRadius: 10,
       });
 
-      expect(repository.findSubscription).toHaveBeenCalledWith(
-        mockUserId,
-        mockCategory,
+      expect(subscriptionRepo.upsert).toHaveBeenCalledWith(
+        { userId: mockUserId, category: mockCategory, areaOrRadius: 10 },
+        {
+          conflictPaths: ['userId', 'category'],
+          skipUpdateIfNoValuesChanged: true,
+        },
       );
-      expect(subscriptionRepo.save).toHaveBeenCalledWith(
-        expect.objectContaining({ areaOrRadius: 10 }),
-      );
-      expect(result.areaOrRadius).toBe(10);
+      expect(result).toEqual(saved);
     });
 
-    it('should create new subscription when not exists', async () => {
-      vi.spyOn(repository, 'findSubscription').mockResolvedValue(null);
-      const newSub = {
-        userId: mockUserId,
-        category: mockCategory,
-        areaOrRadius: 5,
-      };
-      (subscriptionRepo.create as ReturnType<typeof vi.fn>).mockReturnValue(
-        newSub as any,
-      );
-      (subscriptionRepo.save as ReturnType<typeof vi.fn>).mockResolvedValue(
-        newSub as any,
-      );
-
-      const result = await repository.upsertSubscription({
-        userId: mockUserId,
-        category: mockCategory,
-        areaOrRadius: 5,
-      });
-
-      expect(subscriptionRepo.create).toHaveBeenCalledWith({
-        userId: mockUserId,
-        category: mockCategory,
-        areaOrRadius: 5,
-      });
-      expect(subscriptionRepo.save).toHaveBeenCalledWith(newSub);
+    it('should throw when userId or category is missing', async () => {
+      await expect(
+        repository.upsertSubscription({ areaOrRadius: 5 } as any),
+      ).rejects.toThrow('userId and category are required');
     });
   });
 

@@ -177,10 +177,35 @@ describe('ModerationService', () => {
   });
 
   describe('getQueue', () => {
-    it('should return queue items', async () => {
+    it('should map reviewable reports to queue items', async () => {
+      (reportRepo.find as any).mockResolvedValue([
+        {
+          id: 'report-1',
+          description: 'x'.repeat(200),
+          state: 'unverified',
+          submittedAt: new Date('2024-01-01T00:00:00Z'),
+          reporterId: 'resident-1',
+        },
+      ]);
+
       const result = await service.getQueue('moderator-1');
 
-      expect(result).toBeInstanceOf(Array);
+      expect(result).toHaveLength(1);
+      expect(result[0].id).toBe('report-1');
+      expect(result[0].targetType).toBe(ModerationTargetType.REPORT);
+      expect(result[0].targetPreview).toHaveLength(160);
+      expect(reportRepo.find).toHaveBeenCalledWith(
+        expect.objectContaining({ take: 50, skip: 0 }),
+      );
+    });
+
+    it('should return no items for unsupported target types', async () => {
+      const result = await service.getQueue(
+        'moderator-1',
+        ModerationTargetType.USER,
+      );
+
+      expect(result).toEqual([]);
     });
   });
 
@@ -188,10 +213,19 @@ describe('ModerationService', () => {
     it('should create appeal for moderation action', async () => {
       const action = {
         id: 'action-1',
+        targetId: 'report-1',
+        targetType: ModerationTargetType.REPORT,
         appealStatus: AppealStatus.NONE,
-        metadata: {},
+        metadata: {
+          previousState: ReportState.UNVERIFIED,
+          newState: ReportState.REMOVED,
+        },
       };
       (moderationRepo.findById as any).mockResolvedValue(action);
+      (reportRepo.findOne as any).mockResolvedValue({
+        id: 'report-1',
+        reporterId: 'user-1',
+      });
       (moderationRepo.update as any).mockResolvedValue({
         ...action,
         appealStatus: AppealStatus.PENDING,
@@ -203,6 +237,75 @@ describe('ModerationService', () => {
       });
 
       expect(result).toBeDefined();
+      expect(result.appealStatus).toBe(AppealStatus.PENDING);
+    });
+
+    it('should reject appeals from users who did not author the report', async () => {
+      (moderationRepo.findById as any).mockResolvedValue({
+        id: 'action-1',
+        targetId: 'report-1',
+        targetType: ModerationTargetType.REPORT,
+        appealStatus: AppealStatus.NONE,
+        metadata: {},
+      });
+      (reportRepo.findOne as any).mockResolvedValue({
+        id: 'report-1',
+        reporterId: 'someone-else',
+      });
+
+      await expect(
+        service.createAppeal('user-1', {
+          moderationActionId: 'action-1',
+          reason: 'This decision was incorrect based on new evidence',
+        }),
+      ).rejects.toThrow(
+        'Only the affected community member can appeal this action',
+      );
+    });
+  });
+
+  describe('reviewAppeal', () => {
+    it('should approve an appeal and restore the previous report state', async () => {
+      const action = {
+        id: 'action-1',
+        targetId: 'report-1',
+        targetType: ModerationTargetType.REPORT,
+        appealStatus: AppealStatus.PENDING,
+        metadata: {
+          previousState: ReportState.UNVERIFIED,
+          newState: ReportState.REMOVED,
+        },
+      };
+      (moderationRepo.findById as any).mockResolvedValue(action);
+      (moderationRepo.update as any).mockResolvedValue({
+        ...action,
+        appealStatus: AppealStatus.APPROVED,
+      });
+
+      const result = await service.reviewAppeal('moderator-1', 'action-1', {
+        decision: AppealStatus.APPROVED,
+        reason: 'The appeal was justified',
+      });
+
+      expect(reportRepo.update).toHaveBeenCalledWith('report-1', {
+        state: ReportState.UNVERIFIED,
+      });
+      expect(result.appealStatus).toBe(AppealStatus.APPROVED);
+    });
+
+    it('should reject review when no appeal is pending', async () => {
+      (moderationRepo.findById as any).mockResolvedValue({
+        id: 'action-1',
+        appealStatus: AppealStatus.NONE,
+        metadata: {},
+      });
+
+      await expect(
+        service.reviewAppeal('moderator-1', 'action-1', {
+          decision: AppealStatus.APPROVED,
+          reason: 'The appeal was justified',
+        }),
+      ).rejects.toThrow('No pending appeal for this action');
     });
   });
 

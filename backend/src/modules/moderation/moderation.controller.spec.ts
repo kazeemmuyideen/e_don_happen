@@ -86,10 +86,32 @@ describe('ModerationController', () => {
       const queue = [{ id: 'item-1' }];
       service.getQueue.mockResolvedValue(queue);
 
-      const response = await controller.getQueue('moderator-1');
+      const response = await controller.getQueue('moderator-1', {});
 
       expect(response).toEqual(queue);
-      expect(service.getQueue).toHaveBeenCalledWith('moderator-1', undefined);
+      expect(service.getQueue).toHaveBeenCalledWith(
+        'moderator-1',
+        undefined,
+        undefined,
+        undefined,
+      );
+    });
+
+    it('should forward queue filters to the service', async () => {
+      service.getQueue.mockResolvedValue([]);
+
+      await controller.getQueue('moderator-1', {
+        targetType: ModerationTargetType.REPORT,
+        limit: 10,
+        offset: 20,
+      });
+
+      expect(service.getQueue).toHaveBeenCalledWith(
+        'moderator-1',
+        ModerationTargetType.REPORT,
+        10,
+        20,
+      );
     });
   });
 
@@ -140,7 +162,8 @@ describe('ModerationController', () => {
       expect(response).toEqual(action);
       expect(service.reviewAppeal).toHaveBeenCalledWith(
         'moderator-1',
-        expect.any(Object),
+        'action-1',
+        { decision: AppealStatus.APPROVED, reason: 'Appeal justified' },
       );
     });
   });

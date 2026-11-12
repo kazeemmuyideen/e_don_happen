@@ -12,6 +12,7 @@ import { CommunityModule } from './modules/community/community.module.js';
 import { ModerationModule } from './modules/moderation/moderation.module.js';
 import { BillingModule } from './modules/billing/billing.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
+import { PostcodeModule } from './modules/postcode/postcode.module.js';
 import { RedisModule } from './redis/redis.module.js';
 import appConfig from './config/app.config.js';
 
@@ -33,6 +34,7 @@ import appConfig from './config/app.config.js';
     ModerationModule,
     BillingModule,
     AnalyticsModule,
+    PostcodeModule,
   ],
   controllers: [AppController],
   providers: [AppService],

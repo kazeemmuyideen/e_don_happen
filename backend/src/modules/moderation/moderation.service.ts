@@ -98,11 +98,16 @@ export class ModerationService {
       dto.newState ||
       (dto.action === ModerationActionType.APPROVE
         ? ReportState.VERIFIED
-        : dto.action === ModerationActionType.REMOVE
+        : dto.action === ModerationActionType.REMOVE ||
+            dto.action === ModerationActionType.REJECT
           ? ReportState.REMOVED
-          : undefined);
+          : dto.action === ModerationActionType.REVIEW
+            ? ReportState.UNDER_REVIEW
+            : undefined);
     if (!newState)
       throw new BadRequestException('A new report state is required');
+    if (!Object.values(ReportState).includes(newState as ReportState))
+      throw new BadRequestException('Unknown report state');
     return this.reportRepo.manager.transaction(async (manager) => {
       const report = await manager.findOne(Report, {
         where: { id: dto.targetId },
@@ -155,9 +160,9 @@ export class ModerationService {
     }
     if (action.actorId !== actorId) {
       const actor = await this.userRepo.findOne({ where: { id: actorId } });
-      if (!(actor as any)?.privacySettings?.isAdmin) {
+      if (actor?.role !== UserRole.SUPER_ADMIN) {
         throw new ForbiddenException(
-          'Only the original moderator can update this action',
+          'Only the original moderator or a super admin can update this action',
         );
       }
     }
@@ -175,19 +180,35 @@ export class ModerationService {
   }
 
   async getQueue(
-    moderatorId: string,
+    _moderatorId: string,
     targetType?: ModerationTargetType,
+    limit = 50,
+    offset = 0,
   ): Promise<ModerationQueueItemDto[]> {
+    if (targetType && targetType !== ModerationTargetType.REPORT) return [];
     const reports = await this.reportRepo.find({
       where: [
-        { state: 'unverified' },
-        { state: 'disputed' },
-        { state: 'corroborated' },
+        { state: ReportState.UNDER_REVIEW },
+        { state: ReportState.UNVERIFIED },
+        { state: ReportState.DISPUTED },
+        { state: ReportState.CORROBORATED },
       ],
       order: { submittedAt: 'DESC' },
-      take: 100,
+      take: Math.min(100, Math.max(1, limit)),
+      skip: Math.max(0, offset),
     });
-    return reports as any;
+    return reports.map(
+      (report) =>
+        new ModerationQueueItemDto({
+          id: report.id,
+          targetType: ModerationTargetType.REPORT,
+          targetPreview: report.description.slice(0, 160),
+          targetState: report.state,
+          currentState: report.state,
+          submittedAt: report.submittedAt,
+          reporterId: report.reporterId,
+        }),
+    );
   }
 
   async createAppeal(
@@ -199,6 +220,21 @@ export class ModerationService {
     );
     if (!action) {
       throw new NotFoundException('Moderation action not found');
+    }
+    if (action.targetType !== ModerationTargetType.REPORT) {
+      throw new BadRequestException('Only report actions can be appealed');
+    }
+    const report = await this.reportRepo.findOne({
+      where: { id: action.targetId },
+    });
+    if (!report) throw new NotFoundException('Report not found');
+    if (report.reporterId !== userId) {
+      throw new ForbiddenException(
+        'Only the affected community member can appeal this action',
+      );
+    }
+    if (action.appealStatus !== AppealStatus.NONE) {
+      throw new BadRequestException('An appeal is already recorded');
     }
     const updated = await this.moderationRepository.update(
       dto.moderationActionId,
@@ -226,11 +262,42 @@ export class ModerationService {
 
   async reviewAppeal(
     moderatorId: string,
+    actionId: string,
     dto: ReviewAppealDto,
   ): Promise<ModerationAction> {
-    throw new NotImplementedException(
-      'Appeal review is deferred until after the demo',
-    );
+    const action = await this.moderationRepository.findById(actionId);
+    if (!action) throw new NotFoundException('Moderation action not found');
+    if (action.appealStatus !== AppealStatus.PENDING) {
+      throw new BadRequestException('No pending appeal for this action');
+    }
+
+    if (dto.decision === AppealStatus.APPROVED) {
+      const previousState = action.metadata?.previousState;
+      if (
+        action.targetType === ModerationTargetType.REPORT &&
+        Object.values(ReportState).includes(previousState)
+      ) {
+        await this.reportRepo.update(action.targetId, {
+          state: previousState as ReportState,
+        });
+      }
+    }
+
+    const updated = await this.moderationRepository.update(actionId, {
+      appealStatus: dto.decision,
+      metadata: {
+        ...action.metadata,
+        appealReview: {
+          moderatorId,
+          decision: dto.decision,
+          reason: dto.reason,
+          reviewedAt: new Date(),
+        },
+      },
+    });
+    if (!updated)
+      throw new NotFoundException('Failed to update moderation action');
+    return updated;
   }
 
   async mergeReports(
@@ -241,9 +308,48 @@ export class ModerationService {
     targetUpdated: boolean;
     message: string;
   }> {
-    throw new NotImplementedException(
-      'Duplicate grouping is deferred until after the demo',
-    );
+    if (dto.reportIds.length < 2) {
+      throw new BadRequestException('At least two reports are required');
+    }
+    return this.reportRepo.manager.transaction(async (manager) => {
+      const reports = await manager
+        .getRepository(Report)
+        .createQueryBuilder('report')
+        .where('report.id IN (:...ids)', { ids: dto.reportIds })
+        .setLock('pessimistic_write')
+        .getMany();
+      if (reports.length !== new Set(dto.reportIds).size) {
+        throw new NotFoundException('One or more reports were not found');
+      }
+      const [primary, ...duplicates] = reports;
+      for (const duplicate of duplicates) {
+        duplicate.state = ReportState.REMOVED;
+        duplicate.metadata = {
+          ...duplicate.metadata,
+          duplicateOf: primary.id,
+        };
+        await manager.save(duplicate);
+      }
+      const action = await manager.save(
+        ModerationAction,
+        manager.create(ModerationAction, {
+          actorId: moderatorId,
+          targetId: primary.id,
+          targetType: 'report',
+          action: ModerationActionType.MERGE,
+          reason: dto.reason,
+          appealStatus: AppealStatus.NONE,
+          metadata: {
+            mergedReportIds: duplicates.map((report) => report.id),
+          },
+        }),
+      );
+      return {
+        action,
+        targetUpdated: true,
+        message: 'Duplicate reports merged into the primary report',
+      };
+    });
   }
 
   async getAuditTrail(targetId: string): Promise<ModerationAction[]> {
@@ -254,13 +360,6 @@ export class ModerationService {
     moderatorId: string,
     since?: Date,
   ): Promise<Record<string, number>> {
-    return {};
-  }
-
-  private async hideTargetInternal(
-    targetId: string,
-    targetType: ModerationTargetType,
-  ): Promise<boolean> {
-    return true;
+    return this.moderationRepository.countActionsByActor(moderatorId, since);
   }
 }

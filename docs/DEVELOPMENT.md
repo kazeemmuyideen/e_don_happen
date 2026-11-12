@@ -61,7 +61,7 @@ flowchart LR
 
 The normal request path is page event -> API helper -> controller -> guard/DTO validation -> service -> repository/transaction -> public response -> React state. Controllers define HTTP boundaries. DTO decorators validate incoming data. Services enforce ownership, business rules, transactions, and projections. Entities map stored fields and relationships. Guards authenticate and authorize requests. Module metadata wires these dependencies together.
 
-The root application loads configuration, TypeORM, Redis, and domain modules. Identity, reports, notifications, and moderation contain the working core. Incidents, community, SOS, billing, and analytics contain retained entities/module scaffolding rather than complete user workflows. A schema declaration does not imply a working route or UI. Redis connects and closes through its infrastructure service; OTP state and Web Push queue execution currently do not use Redis.
+The root application loads configuration, TypeORM, Redis, and domain modules. Identity, reports, notifications, moderation, incidents, community, SOS, billing, analytics, postcodes, and evidence have working HTTP workflows; the React client currently exercises identity, reports, postcodes, and the report feed. A schema declaration does not imply a UI. Redis connects and closes through its infrastructure service; OTP state and Web Push queue execution currently do not use Redis.
 
 PostGIS stores longitude/latitude in SRID 4326. GeoJSON coordinate order is [longitude, latitude], while many UI interfaces display latitude first. Geographic distance uses ST_DWithin with geography casts so distances are metres. A transaction commits related writes together; pessimistic row locks serialize competing report votes. These mechanisms protect consistency but do not replace abuse prevention or prove an observation true.
 
@@ -114,7 +114,7 @@ Profiles expose own phone, display name, role, status, areas, language, verified
 
 ## Reports and community confidence
 
-Categories are traffic, weather, fire, security, medical, utilities, community, event, and other. A report requires a description of 10-1500 characters and a location with valid longitude/latitude ranges. Optional observedAt must be ISO and cannot exceed now by over sixty seconds. Evidence reference fields exist but nonempty evidence arrays are rejected: media ingestion is not implemented. Persisted location precision is approximate; public coordinates are rounded to two decimals. Public reporter projections omit phone and private metadata.
+Categories are traffic, weather, fire, security, medical, utilities, community, event, and other. A report requires a description of 10-1500 characters and a location with valid longitude/latitude ranges. Optional observedAt must be ISO and cannot exceed now by over sixty seconds. Evidence reference fields accept up to ten references (1-500 characters each). Image evidence can be uploaded as base64 PNG/JPEG/WebP through `POST /api/reports/:id/evidence`, is stored under `EVIDENCE_STORAGE_DIR` (5 MB default limit), and stays pending until a moderator approves it. `GET /api/reports/:id/evidence` shows approved assets to everyone and pending assets to the reporter or a moderator; `GET /api/evidence/:id/file` streams the stored image. Persisted location precision is approximate; public coordinates are rounded to two decimals. Public reporter projections omit phone and private metadata.
 
 Creation saves the report and matching inbox rows in a single database transaction. Read queries expose only unverified, corroborated, verified, disputed, and resolved states. Under-review, stale, and removed rows are excluded from the public feed. Filters include category, state, since, paired latitude/longitude, radius, limit, and offset. Defaults are limit 20, maximum 100; radius ranges from 100 to 100000 metres. A radius alone has no location centre; coordinates without radius do not apply a distance restriction. Results sort by newest submission. Zero coordinates are valid.
 
@@ -139,7 +139,25 @@ All moderation controller routes require a current moderator or super_admin. Act
 
 The queue returns up to 100 raw report rows in unverified/disputed/corroborated states, newest first. It does not scope results by community, and the supplied moderator/target filters are not implemented. Some advertised Swagger response shapes differ from this actual array. The main action DTO requires a 10-1000 character reason; several quick-action bodies are inline types and do not have equivalent runtime validation.
 
-Audit records are not immutable: updateAction permits owner edits and contains the unsafe privacySettings.isAdmin fallback described above. Appeals are incomplete: creation stores metadata without full ownership/duplicate checks, the controller is moderator-only, review returns 501, and residents have no working appeal flow. Merge reports and incident verify/dispute return 501; moderator stats currently return an empty object. The flag shortcut does not supply the state required by the core action handler and fails. Do not advertise these scaffold endpoints as finished features. No automatic stale/resolution scheduler or complete incident grouping workflow exists.
+Audit records are not immutable: `updateAction` permits the original moderator (or a super admin) to edit reason, appeal status, and metadata. Core moderation covers report approve/reject/flag/review, appeals (create, pending, review), report merge, per-moderator stats, and the audit trail. Only report targets are supported by the generic action endpoint; non-report target types return 501. Incidents now have their own create/update/verify/link API under `/api/incidents`. There is still no automatic stale/resolution scheduler.
+
+## Community safety and operations
+
+All routes below require a bearer token unless noted.
+
+| Area | Routes | Authorization |
+| --- | --- | --- |
+| Communities | `GET /api/communities`, `GET /api/communities/:id` | public |
+| | `POST /api/communities`, `PUT /api/communities/:id`, `POST|PUT|DELETE /api/communities/:id/responders`, `PUT /api/communities/:id/admin` | creator becomes community_admin; updates require the community admin, moderator, or super admin |
+| SOS | `POST /api/sos`, `GET /api/sos/mine`, `GET /api/sos/assigned`, `GET /api/sos/:id`, `PUT /api/sos/:id/acknowledge`, `PUT /api/sos/:id/state` | any authenticated user; only dispatched recipients can acknowledge and only the requester (or staff) can close |
+| Incidents | `GET /api/incidents`, `GET /api/incidents/:id` | authenticated |
+| | `POST /api/incidents`, `PUT /api/incidents/:id`, `PUT /api/incidents/:id/verification`, `POST /api/incidents/:id/reports`, `DELETE /api/incidents/:id/reports/:reportId` | moderator or super admin |
+| Billing | `POST /api/billing/subscriptions`, `GET /api/billing/subscriptions/community/:communityId`, `GET|PUT /api/billing/subscriptions/:id`, `PUT /api/billing/subscriptions/:id/cancel` | community admin for that community, moderator, or super admin |
+| Analytics | `GET /api/analytics/reports|notifications|incidents|sos` | moderator or super admin |
+| | `GET /api/analytics/audit-logs` | super admin |
+| Health | `GET /api/health` | public; reports database connectivity and uptime |
+
+SOS creation snapshots a rounded point, finds active responders whose coverage area contains the point (or whose community boundary does), plus that community's admin, excludes the requester, and writes both `sos_recipients` and in-app `notification_deliveries` rows in one transaction. Community boundaries and responder coverage areas are validated as closed GeoJSON polygons. Billing records plan, status, renewal date (30 days), and an optional external reference; payment capture is not implemented. Analytics uses grouped counts and supports a 1-90 day window.
 
 ## Subscriptions, inbox, and push
 
@@ -311,7 +329,7 @@ Source: [backend/src/modules/reports/controllers/reports.controller.ts](https://
 
 Entity decorators in the inventory below are the schema reference: Entity names identify tables; Column includes database names, SQL types, lengths, defaults, and nullability; PrimaryGeneratedColumn produces generated IDs; PrimaryColumn defines composite keys; Index/Unique define declared constraints; ManyToOne/OneToMany/JoinColumn describe relationships. A TypeScript optional marker alone does not establish database nullability. jsonb stores structured metadata without automatically validating its shape. timestamptz stores instants; presentation timezone is a separate concern.
 
-Core relationships are users -> reports, reports/users -> confirmations, users -> notification_subscriptions/push_devices, and actors/targets -> moderation_actions. Notification deliveries link recipients to report-triggered payloads; some inherited columns retain incident/SOS names even when used for report IDs. Retained domain entities include incident grouping/linking, evidence, communities/membership/responders, SOS/escalations, billing plans/subscriptions/usage, and analytics. These tables and relation declarations are reference scaffolding, not complete product integrations.
+Core relationships are users -> reports, reports/users -> confirmations, users -> notification_subscriptions/push_devices, and actors/targets -> moderation_actions. Notification deliveries link recipients to report-triggered payloads; some inherited columns retain incident/SOS names even when used for report IDs. Incident grouping/linking, evidence, communities/membership/responders, SOS/escalations, billing plans/subscriptions/usage, and analytics now have services, controllers, and tests on top of these tables; deeper product rules (payment capture, responder dispatch SLAs, escalation automation) remain outside this demo.
 
 ## Tests and troubleshooting
 
@@ -346,7 +364,7 @@ This implementation has development defaults and incomplete security/operations 
 4. Deploy a stable HTTPS origin with TLS termination/reverse proxy, same-origin /api routing, correct CORS, explicit NODE_ENV=production, managed secrets, persistent VAPID keys, and nonpublic database/Redis. The loopback API needs an ingress proxy on the same host or an explicit binding redesign for separate containers.
 5. Containerize or supervise processes, add health/readiness checks, structured redacted logs, error tracking, metrics, graceful worker drain, and push retry/queue monitoring. Installed telemetry dependencies do not mean telemetry is configured.
 6. Review indexes/query plans and per-report profile-count queries, paginate inbox/history, use atomic subscription upserts/deduplication, add load/concurrency tests, and establish Web Push provider/browser acceptance tests. Decide under-review vote policy and local timezone handling.
-7. Finish or disable incomplete endpoints: appeals/review, merge, incident moderation, stats, legacy channel dispatch, media uploads, SOS/responders, billing, and analytics. Decide badge wording and false-report/abuse handling with the product owner.
+7. Harden the newly completed workflows: validate SOS escalation/sharing policy semantics, add real payment capture and plan enforcement for billing, define responder dispatch SLAs, add evidence virus scanning/object storage and retention enforcement, and decide badge wording and false-report/abuse handling with the product owner.
 8. Establish CI checks, environment-separated deployment, dependency review, accessibility/browser testing, explicit licensing, privacy/consent/terms, deletion/retention procedures, and real incident escalation disclaimers in product policy. Do not imply emergency dispatch currently exists.
 
 There are no committed Dockerfiles, migration workflow, or deployment CI pipeline in this snapshot. Keep public development docs separate from private walkthroughs, .env files, OTPs, VAPID private keys, tunnel artifacts, and the original private product plan.

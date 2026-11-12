@@ -1,13 +1,12 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
-import { Repository, QueryBuilder } from 'typeorm';
+import { Repository } from 'typeorm';
 import { ModerationRepository } from './moderation.repository.js';
 import { ModerationAction } from '../entities/moderation-action.entity.js';
 import {
   ModerationActionType,
   ModerationTargetType,
   AppealStatus,
-  ModerationActionFilterDto,
 } from '../dto/moderation.dto.js';
 
 describe('ModerationRepository', () => {

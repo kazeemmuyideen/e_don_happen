@@ -6,7 +6,7 @@ A location-aware community incident reporting application for Lagos. Residents p
 
 The integrated application is a functional development prototype, not a production release. This documentation describes [implementation snapshot `09db39d`](https://github.com/johdanike/group_9b/tree/09db39de1b8b761a369135badbb0802e9f730f99) on `demo/pitch-integration`. The documentation can be merged independently; its presence on `main` does not imply that the integrated runtime has been merged there.
 
-Implemented: phone verification in local demo mode, JWT sessions, persistent geospatial reports, independent community votes, moderator review, contributor history badges, category/radius subscriptions, inbox notifications, and an installable PWA with opt-in Web Push. Production SMS, media uploads, emergency response dispatch, billing, and several moderation workflows remain incomplete.
+Implemented: phone verification in local demo mode, JWT sessions, persistent geospatial reports with NIPOST postcode validation, independent community votes, moderator review and appeals, contributor history badges, category/radius subscriptions, inbox notifications, image evidence upload/moderation, communities and responders, SOS fan-out with acknowledgement, incident grouping/verification, subscription billing records, analytics summaries, a health endpoint, and an installable PWA with opt-in Web Push. Production SMS, payment capture, external emergency-dispatch integrations, object storage/virus scanning, and escalation automation remain incomplete.
 
 ## Technology
 

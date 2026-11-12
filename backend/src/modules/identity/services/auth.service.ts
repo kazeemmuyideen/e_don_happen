@@ -3,7 +3,6 @@ import {
   UnauthorizedException,
   ConflictException,
   NotFoundException,
-  BadRequestException,
 } from '@nestjs/common';
 import { UserRepository } from '../repositories/user.repository.js';
 import { OtpService } from './otp.service.js';
@@ -18,6 +17,7 @@ import {
   UpdateProfileDto,
   RefreshTokenDto,
 } from '../dto/auth.dto.js';
+import { normalizePhone } from '../utils/phone.js';
 
 @Injectable()
 export class AuthService {
@@ -30,22 +30,22 @@ export class AuthService {
   async sendOtp(
     sendOtpDto: SendOtpDto,
   ): Promise<{ success: boolean; message: string }> {
-    const existingUser = await this.userRepository.findByPhone(
-      sendOtpDto.phone,
-    );
+    const phone = normalizePhone(sendOtpDto.phone);
+    const existingUser = await this.userRepository.findByPhone(phone);
 
     if (existingUser && existingUser.accountStatus === AccountStatus.BANNED) {
       throw new UnauthorizedException('Account is banned');
     }
 
-    return this.otpService.sendOtp(sendOtpDto.phone);
+    return this.otpService.sendOtp(phone);
   }
 
   async verifyOtpAndLogin(
     verifyOtpDto: VerifyOtpDto,
   ): Promise<LoginResponseDto> {
+    const phone = normalizePhone(verifyOtpDto.phone);
     const verification = await this.otpService.verifyOtp(
-      verifyOtpDto.phone,
+      phone,
       verifyOtpDto.otp,
     );
 
@@ -53,11 +53,11 @@ export class AuthService {
       throw new UnauthorizedException(verification.message);
     }
 
-    let user = await this.userRepository.findByPhone(verifyOtpDto.phone);
+    let user = await this.userRepository.findByPhone(phone);
 
     if (!user) {
       user = await this.userRepository.create({
-        phone: verifyOtpDto.phone,
+        phone,
         displayName: 'User',
         accountStatus: AccountStatus.ACTIVE,
         role: UserRole.RESIDENT,
@@ -125,8 +125,16 @@ export class AuthService {
     if (updateProfileDto.language) user.language = updateProfileDto.language;
     if (updateProfileDto.lgas)
       user.metadata = { ...user.metadata, lgas: updateProfileDto.lgas };
-    if (updateProfileDto.privacySettings)
-      user.privacySettings = updateProfileDto.privacySettings;
+    if (updateProfileDto.privacySettings) {
+      user.privacySettings = {
+        ...(user.privacySettings || {}),
+        ...Object.fromEntries(
+          Object.entries(updateProfileDto.privacySettings).filter(
+            ([, value]) => value !== undefined,
+          ),
+        ),
+      };
+    }
 
     return this.userRepository.update(user.id, user);
   }

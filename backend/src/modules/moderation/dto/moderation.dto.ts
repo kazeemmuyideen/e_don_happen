@@ -1,11 +1,17 @@
 import {
+  IsArray,
   IsEnum,
+  IsIn,
+  IsInt,
   IsOptional,
   IsString,
   IsUUID,
+  Max,
   MaxLength,
+  Min,
   MinLength,
 } from 'class-validator';
+import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
 
 export enum ModerationActionType {
@@ -141,13 +147,66 @@ export class ModerationActionFilterDto {
 
   @ApiPropertyOptional({ default: 1 })
   @IsOptional()
-  @IsString()
-  page?: string;
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  page?: number;
 
-  @ApiPropertyOptional({ default: 20 })
+  @ApiPropertyOptional({ default: 20, maximum: 100 })
   @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+}
+
+export class ModerationQueueQueryDto {
+  @ApiPropertyOptional({ enum: ModerationTargetType })
+  @IsOptional()
+  @IsEnum(ModerationTargetType)
+  targetType?: ModerationTargetType;
+
+  @ApiPropertyOptional({ default: 50, maximum: 100 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(1)
+  @Max(100)
+  limit?: number;
+
+  @ApiPropertyOptional({ default: 0 })
+  @IsOptional()
+  @Type(() => Number)
+  @IsInt()
+  @Min(0)
+  offset?: number;
+}
+
+export class QuickApproveDto {
+  @ApiPropertyOptional({ enum: ReportState })
+  @IsOptional()
+  @IsIn([
+    ReportState.CORROBORATED,
+    ReportState.VERIFIED,
+    ReportState.DISPUTED,
+    ReportState.UNDER_REVIEW,
+  ])
+  newState?: string;
+
+  @ApiProperty({ minLength: 10, maxLength: 1000 })
   @IsString()
-  limit?: string;
+  @MinLength(10)
+  @MaxLength(1000)
+  reason: string;
+}
+
+export class QuickReasonDto {
+  @ApiProperty({ minLength: 10, maxLength: 1000 })
+  @IsString()
+  @MinLength(10)
+  @MaxLength(1000)
+  reason: string;
 }
 
 export class CreateAppealDto {
@@ -167,8 +226,8 @@ export class CreateAppealDto {
 }
 
 export class ReviewAppealDto {
-  @ApiProperty({ enum: AppealStatus })
-  @IsEnum(AppealStatus)
+  @ApiProperty({ enum: [AppealStatus.APPROVED, AppealStatus.REJECTED] })
+  @IsIn([AppealStatus.APPROVED, AppealStatus.REJECTED])
   decision: AppealStatus;
 
   @ApiProperty({ minLength: 10, maxLength: 1000 })
@@ -180,6 +239,7 @@ export class ReviewAppealDto {
 
 export class MergeReportsDto {
   @ApiProperty({ type: [String], minItems: 2 })
+  @IsArray()
   @IsUUID(undefined, { each: true })
   reportIds: string[];
 

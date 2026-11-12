@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, QueryBuilder, MoreThanOrEqual, LessThanOrEqual, In } from 'typeorm';
+import { Repository } from 'typeorm';
 import { ModerationAction } from '../entities/moderation-action.entity.js';
 import {
   ModerationActionType,
@@ -48,8 +48,8 @@ export class ModerationRepository {
     if (filters.since) qb.andWhere('ma.timestamp >= :since', { since: new Date(filters.since) });
     if (filters.until) qb.andWhere('ma.timestamp <= :until', { until: new Date(filters.until) });
 
-    const page = parseInt(filters.page ?? '1', 10);
-    const limit = parseInt(filters.limit ?? '20', 10);
+    const page = Math.max(1, filters.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filters.limit ?? 20));
 
     qb.orderBy('ma.timestamp', 'DESC');
     qb.skip((page - 1) * limit);
@@ -74,6 +74,24 @@ export class ModerationRepository {
     const qb = this.repo.createQueryBuilder('ma').where('ma.targetType = :targetType', { targetType }).andWhere('ma.action = :action', { action });
     if (since) qb.andWhere('ma.timestamp >= :since', { since });
     return qb.getCount();
+  }
+
+  async countActionsByActor(
+    actorId: string,
+    since?: Date,
+  ): Promise<Record<string, number>> {
+    const qb = this.repo
+      .createQueryBuilder('ma')
+      .select('ma.action', 'action')
+      .addSelect('COUNT(*)', 'count')
+      .where('ma.actorId = :actorId', { actorId })
+      .groupBy('ma.action');
+    if (since) qb.andWhere('ma.timestamp >= :since', { since });
+    const rows = await qb.getRawMany();
+    return rows.reduce(
+      (acc, row) => ({ ...acc, [row.action]: Number(row.count) }),
+      {},
+    );
   }
 
   async getAppealActions(status: AppealStatus = AppealStatus.PENDING): Promise<ModerationAction[]> {

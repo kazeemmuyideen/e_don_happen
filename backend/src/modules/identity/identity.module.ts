@@ -12,6 +12,7 @@ import { JwtTokenService } from './services/jwt.service.js';
 import { UserRepository } from './repositories/user.repository.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
 import { RolesGuard } from './guards/roles.guard.js';
+import { getJwtSecret } from './utils/jwt-config.js';
 
 @Module({
   imports: [
@@ -20,7 +21,7 @@ import { RolesGuard } from './guards/roles.guard.js';
     JwtModule.registerAsync({
       imports: [ConfigModule],
       useFactory: (configService: ConfigService) => ({
-        secret: configService.get('JWT_SECRET') || 'neighbourhood-signal-secret',
+        secret: getJwtSecret(configService, 'JWT_SECRET'),
         signOptions: { expiresIn: configService.get('JWT_ACCESS_EXPIRY') || '15m' },
       }),
       inject: [ConfigService],

@@ -1,6 +1,6 @@
 import { Injectable } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository, LessThan, MoreThanOrEqual, In } from 'typeorm';
+import { Repository, MoreThanOrEqual } from 'typeorm';
 import { NotificationSubscription } from '../entities/notification-subscription.entity.js';
 import { NotificationDelivery } from '../entities/notification-delivery.entity.js';
 import {
@@ -35,16 +35,19 @@ export class NotificationsRepository {
   async upsertSubscription(
     subscription: Partial<NotificationSubscription>,
   ): Promise<NotificationSubscription> {
-    const existing = await this.findSubscription(
-      subscription.userId!,
-      subscription.category!,
-    );
-    if (existing) {
-      Object.assign(existing, subscription);
-      return this.subscriptionRepo.save(existing);
+    if (!subscription.userId || !subscription.category) {
+      throw new Error('userId and category are required');
     }
-    const newSubscription = this.subscriptionRepo.create(subscription);
-    return this.subscriptionRepo.save(newSubscription);
+    await this.subscriptionRepo.upsert(subscription, {
+      conflictPaths: ['userId', 'category'],
+      skipUpdateIfNoValuesChanged: true,
+    });
+    const saved = await this.findSubscription(
+      subscription.userId,
+      subscription.category,
+    );
+    if (!saved) throw new Error('Failed to load saved subscription');
+    return saved;
   }
 
   async deleteSubscription(userId: string, category: string): Promise<void> {
@@ -213,8 +216,10 @@ export class NotificationsRepository {
 
   async filterDeliveries(
     filters: NotificationDeliveryFilterDto,
-  ): Promise<NotificationDelivery[]> {
-    return this.deliveryRepo.find({
+  ): Promise<{ data: NotificationDelivery[]; total: number }> {
+    const page = Math.max(1, filters.page ?? 1);
+    const limit = Math.min(100, Math.max(1, filters.limit ?? 20));
+    const [data, total] = await this.deliveryRepo.findAndCount({
       where: {
         ...(filters.incidentIdOrSosId && {
           incidentIdOrSosId: filters.incidentIdOrSosId,
@@ -224,8 +229,9 @@ export class NotificationsRepository {
         ...(filters.deliveryState && { deliveryState: filters.deliveryState }),
       },
       order: { createdAt: 'DESC' },
-      skip: ((filters.page ?? 1) - 1) * (filters.limit ?? 20),
-      take: filters.limit ?? 20,
+      skip: (page - 1) * limit,
+      take: limit,
     });
+    return { data, total };
   }
 }

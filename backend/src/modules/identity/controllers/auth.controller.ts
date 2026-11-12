@@ -26,6 +26,10 @@ import {
   UpdateProfileDto,
   RefreshTokenDto,
   LoginResponseDto,
+  AssignResponderDto,
+  AssignCommunityAdminDto,
+  UserAccountActionDto,
+  UserTargetDto,
 } from '../dto/auth.dto.js';
 import { UserRole } from '../interfaces/identity.interface.js';
 
@@ -103,7 +107,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Role assigned' })
   async assignResponder(
     @Request() req: any,
-    @Body() body: { userId: string; communityId: string },
+    @Body() body: AssignResponderDto,
   ) {
     return this.authService.assignResponderRole(body.userId, body.communityId);
   }
@@ -114,7 +118,10 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Assign moderator role (super admin only)' })
   @ApiResponse({ status: 200, description: 'Role assigned' })
-  async assignModerator(@Request() req: any, @Body() body: { userId: string }) {
+  async assignModerator(
+    @Request() req: any,
+    @Body() body: UserTargetDto,
+  ) {
     return this.authService.assignModeratorRole(body.userId);
   }
 
@@ -126,7 +133,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Role assigned' })
   async assignCommunityAdmin(
     @Request() req: any,
-    @Body() body: { userId: string; communityId: string },
+    @Body() body: AssignCommunityAdminDto,
   ) {
     return this.authService.assignCommunityAdminRole(
       body.userId,
@@ -142,7 +149,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'User suspended' })
   async suspendUser(
     @Request() req: any,
-    @Body() body: { userId: string; reason?: string },
+    @Body() body: UserAccountActionDto,
   ) {
     return this.authService.suspendUser(body.userId, body.reason);
   }
@@ -155,7 +162,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'User banned' })
   async banUser(
     @Request() req: any,
-    @Body() body: { userId: string; reason?: string },
+    @Body() body: UserAccountActionDto,
   ) {
     return this.authService.banUser(body.userId, body.reason);
   }
@@ -166,7 +173,10 @@ export class AuthController {
   @ApiBearerAuth()
   @ApiOperation({ summary: 'Reactivate suspended/banned user (moderator+)' })
   @ApiResponse({ status: 200, description: 'User reactivated' })
-  async reactivateUser(@Request() req: any, @Body() body: { userId: string }) {
+  async reactivateUser(
+    @Request() req: any,
+    @Body() body: UserTargetDto,
+  ) {
     return this.authService.reactivateUser(body.userId);
   }
 

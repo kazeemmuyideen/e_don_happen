@@ -8,10 +8,7 @@ import { databaseConfig } from '../config/database.config.js';
   imports: [
     TypeOrmModule.forRootAsync({
       imports: [ConfigModule],
-      useFactory: (configService: ConfigService) => {
-        const config = databaseConfig();
-        return config;
-      },
+      useFactory: () => databaseConfig(),
       inject: [ConfigService],
     }),
   ],

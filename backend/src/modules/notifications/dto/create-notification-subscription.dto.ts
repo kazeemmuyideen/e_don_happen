@@ -7,6 +7,9 @@ import {
   Min,
   Max,
   IsIn,
+  Matches,
+  ArrayMaxSize,
+  IsArray,
 } from 'class-validator';
 import { Type } from 'class-transformer';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
@@ -22,16 +25,35 @@ export class QuietHoursDto {
   @ApiPropertyOptional({ example: '22:00' })
   @IsOptional()
   @IsString()
+  @Matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/, {
+    message: 'Quiet hours start must use HH:MM',
+  })
   start?: string;
 
   @ApiPropertyOptional({ example: '07:00' })
   @IsOptional()
   @IsString()
+  @Matches(/^([01]?[0-9]|2[0-3]):[0-5][0-9]$/, {
+    message: 'Quiet hours end must use HH:MM',
+  })
   end?: string;
 
   @ApiPropertyOptional({ example: ['Saturday', 'Sunday'] })
   @IsOptional()
-  @IsString({ each: true })
+  @IsArray()
+  @ArrayMaxSize(7)
+  @IsIn(
+    [
+      'Sunday',
+      'Monday',
+      'Tuesday',
+      'Wednesday',
+      'Thursday',
+      'Friday',
+      'Saturday',
+    ],
+    { each: true },
+  )
   days?: string[];
 }
 
