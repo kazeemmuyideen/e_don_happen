@@ -23,5 +23,11 @@ export default () => ({
   evidence: {
     storageDir: process.env.EVIDENCE_STORAGE_DIR || '.local/evidence',
     maxBytes: parseInt(process.env.EVIDENCE_MAX_BYTES || '5242880', 10),
+    retentionDays: parseInt(process.env.EVIDENCE_RETENTION_DAYS || '90', 10),
+    retentionEnabled: process.env.EVIDENCE_RETENTION_ENABLED !== 'false',
+    retentionIntervalMs: parseInt(
+      process.env.EVIDENCE_RETENTION_INTERVAL_MS || '86400000',
+      10,
+    ),
   },
 });

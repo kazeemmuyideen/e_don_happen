@@ -49,6 +49,7 @@ Authentication currently requires `DEMO_MODE=true` outside production. Request a
 | `npm run build` | Compile backend and build the PWA |
 | `npm test` | Run backend unit tests |
 | `npm run test:e2e` | Run HTTP integration tests using its own API process and the configured demo database |
+| `npm run health` | Probe `GET /api/health` (override with `HEALTH_URL`) and exit non-zero when unhealthy |
 | `npm run lint --workspace backend` | Run type-aware backend linting |
 | `npm run demo:seed` | Add guarded, idempotent sample data after building |
 | `npm run demo:serve` | Serve built frontend and proxy the API on port 4173 |

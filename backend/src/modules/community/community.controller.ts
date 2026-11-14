@@ -5,6 +5,7 @@ import {
   Get,
   Param,
   Post,
+  Query,
   Put,
   UseGuards,
 } from '@nestjs/common';
@@ -22,6 +23,7 @@ import { CommunityService } from './community.service.js';
 import {
   AddResponderDto,
   AssignCommunityAdminDto,
+  CommunityUserLookupDto,
   CreateCommunityDto,
   UpdateCommunityDto,
   UpdateResponderDto,
@@ -70,6 +72,19 @@ export class CommunityController {
     @Body() dto: UpdateCommunityDto,
   ) {
     return this.communityService.update(userId, id, dto);
+  }
+
+  @Get(':id/users/lookup')
+  @ApiBearerAuth()
+  @UseGuards(AuthGuard('jwt'), RolesGuard)
+  @Roles(...ADMIN_ROLES)
+  @ApiOperation({ summary: 'Find an account by phone before adding a responder' })
+  lookupUser(
+    @Param('id') id: string,
+    @CurrentUserId() userId: string,
+    @Query() query: CommunityUserLookupDto,
+  ) {
+    return this.communityService.lookupUser(userId, id, query.phone);
   }
 
   @Post(':id/responders')

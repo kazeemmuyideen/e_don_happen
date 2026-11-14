@@ -208,6 +208,8 @@ export class WebPushService implements OnModuleInit, OnModuleDestroy {
         const payload = delivery.payload ?? ({} as Record<string, unknown>);
         const reportId =
           typeof payload.reportId === 'string' ? payload.reportId : undefined;
+        const sosId =
+          typeof payload.sosId === 'string' ? payload.sosId : undefined;
         const notification = {
           title: String(payload.title || 'E don happen').slice(0, 120),
           body: String(payload.body || 'A new update is available.').slice(
@@ -216,7 +218,9 @@ export class WebPushService implements OnModuleInit, OnModuleDestroy {
           ),
           url: reportId
             ? `/dashboard?report=${encodeURIComponent(reportId)}`
-            : '/dashboard',
+            : sosId
+              ? `/dashboard?tab=SOS&sos=${encodeURIComponent(sosId)}`
+              : '/dashboard',
           tag: delivery.id,
         };
         for (const device of devices) {

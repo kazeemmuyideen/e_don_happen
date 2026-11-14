@@ -1,4 +1,8 @@
 import PhoneNotifications from '../components/PhoneNotifications.jsx';
+import SosPanel from '../components/SosPanel.jsx';
+import CommunityPanel from '../components/CommunityPanel.jsx';
+import OpsPanel from '../components/OpsPanel.jsx';
+import EvidencePanel from '../components/EvidencePanel.jsx';
 import { disablePush } from '../lib/push.js';
 import { useCallback, useEffect, useState } from 'react';
 import { Navigate, useNavigate, useLocation } from 'react-router-dom';
@@ -61,6 +65,7 @@ export default function Dashboard() {
   const [initialized, setInitialized] = useState(false);
   const current = session();
   const moderator = ['moderator', 'super_admin'].includes(profile?.role);
+  const focusSosId = new URLSearchParams(search).get('sos');
 
   const load = useCallback(async () => {
     if (!session()) return;
@@ -111,6 +116,22 @@ export default function Dashboard() {
     const timer = setInterval(() => load().catch(() => {}), 20000);
     return () => clearInterval(timer);
   }, [load]);
+
+  useEffect(() => {
+    const requested = new URLSearchParams(search).get('tab');
+    if (!requested || !profile?.id) return;
+    const allowed = [
+      'Nearby',
+      'Report',
+      'My reports',
+      'SOS',
+      'Community',
+      'Notifications',
+      'Preferences',
+      ...(moderator ? ['Moderation', 'Operations'] : []),
+    ];
+    if (allowed.includes(requested)) setTab(requested);
+  }, [search, profile?.id, moderator]);
 
   useEffect(() => {
     const id = new URLSearchParams(search).get('report');
@@ -230,16 +251,53 @@ export default function Dashboard() {
     'Nearby',
     'Report',
     'My reports',
+    'SOS',
+    'Community',
     'Notifications',
     'Preferences',
-    ...(moderator ? ['Moderation'] : []),
+    ...(moderator ? ['Moderation', 'Operations'] : []),
   ];
   const items =
-    tab === 'Moderation'
-      ? queue
-      : tab === 'My reports'
-        ? reports.filter((r) => r.reporterId === profile?.id)
-        : reports;
+    tab === 'My reports'
+      ? reports.filter((r) => r.reporterId === profile?.id)
+      : reports;
+  const votable = ['unverified', 'corroborated', 'disputed'];
+
+  function queueCard(item) {
+    return (
+      <article key={item.id} className={panel}>
+        <div className="flex flex-wrap items-center gap-2">
+          <span className="text-xs font-bold uppercase tracking-wider text-ink-soft">
+            {item.category || 'report'} | {item.areaName || 'Lagos'}
+          </span>
+          <Badge state={item.currentState} />
+          {item.flagCount > 0 && (
+            <span className="rounded-full bg-amber-100 px-2 py-1 text-xs font-bold text-amber-900">
+              {item.flagCount} flag{item.flagCount === 1 ? '' : 's'}
+            </span>
+          )}
+        </div>
+        <button
+          className="mt-3 block text-left text-lg font-bold leading-relaxed hover:underline"
+          onClick={() => openReport(item.id)}
+        >
+          {item.description || item.targetPreview}
+        </button>
+        <p className="mt-2 text-xs text-ink-soft">
+          Reported by {item.reporterDisplayName || 'Resident'} | Submitted{' '}
+          {when(item.submittedAt)}
+        </p>
+        <p className="mt-3 text-xs text-ink-soft">
+          {STATUS_HELP[item.currentState] || 'Awaiting review.'}
+        </p>
+        <div className="mt-4 border-t border-ink/10 pt-4">
+          <button className="btn-outline" onClick={() => openReport(item.id)}>
+            Open report and review
+          </button>
+        </div>
+      </article>
+    );
+  }
 
   function card(report) {
     const own = report.reporterId === profile?.id;
@@ -286,22 +344,14 @@ export default function Dashboard() {
           <div className="flex gap-2">
             <button
               className="rounded-full border border-ink/15 px-3 py-2 text-xs font-bold disabled:opacity-40"
-              disabled={
-                busy ||
-                own ||
-                ['removed', 'resolved', 'stale'].includes(report.state)
-              }
+              disabled={busy || own || !votable.includes(report.state)}
               onClick={() => vote(report, 'confirm')}
             >
               Confirm firsthand | {report.confirmationsCount || 0}
             </button>
             <button
               className="rounded-full border border-ink/15 px-3 py-2 text-xs font-bold disabled:opacity-40"
-              disabled={
-                busy ||
-                own ||
-                ['removed', 'resolved', 'stale'].includes(report.state)
-              }
+              disabled={busy || own || !votable.includes(report.state)}
               onClick={() => vote(report, 'dispute')}
             >
               Dispute | {report.disputesCount || 0}
@@ -323,7 +373,8 @@ export default function Dashboard() {
         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
           <strong>Local pilot demo</strong> | Seeded reports are illustrative.
           Install from the HTTPS sharing link to enable optional phone
-          notifications. SMS and emergency response are not connected.
+          notifications. SMS and external emergency dispatch are not
+          connected; SOS alerts only reach responders in this app.
         </div>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>
@@ -394,6 +445,7 @@ export default function Dashboard() {
         )}
         <div className="grid gap-6 lg:grid-cols-[1fr_290px]">
           <div className="min-w-0 space-y-5">
+            {['Nearby', 'My reports', 'Moderation'].includes(tab) && (
             <div className={`${panel} grid gap-3 sm:grid-cols-3`}>
               <label className="text-xs font-bold">
                 Area
@@ -436,6 +488,7 @@ export default function Dashboard() {
                 </select>
               </label>
             </div>
+            )}
             {selected && (
               <div className="space-y-3 rounded-3xl border-2 border-primary p-3">
                 <div className="flex items-center justify-between px-2">
@@ -454,6 +507,14 @@ export default function Dashboard() {
                   coordinates and private contact details are hidden from the
                   public feed.
                 </p>
+                <EvidencePanel
+                  reportId={selected.id}
+                  profile={profile}
+                  canUpload={
+                    selected.reporterId === profile?.id || moderator
+                  }
+                  onChanged={() => openReport(selected.id)}
+                />
                 {moderator && selected.reporterId !== profile?.id && (
                   <div className={panel}>
                     <label className="text-sm font-bold">
@@ -496,17 +557,19 @@ export default function Dashboard() {
                 <div className="flex items-center justify-between">
                   <h2 className="text-xl font-bold">
                     {tab === 'Moderation'
-                      ? 'Awaiting review'
+                      ? 'Review queue'
                       : tab === 'My reports'
                         ? 'Your contributions in this area'
                         : `Around ${area}`}
                   </h2>
                   <span className="text-sm text-ink-soft">
-                    {items.length} reports
+                    {tab === 'Moderation' ? queue.length : items.length} reports
                   </span>
                 </div>
                 {loading ? (
                   <p className={panel}>Loading the local feed...</p>
+                ) : tab === 'Moderation' && queue.length ? (
+                  queue.map(queueCard)
                 ) : items.length ? (
                   items.map(card)
                 ) : (
@@ -607,6 +670,21 @@ export default function Dashboard() {
                 </button>
               </form>
             )}
+            {tab === 'SOS' && (
+              <SosPanel
+                area={area}
+                profile={profile}
+                focusSosId={focusSosId}
+              />
+            )}
+            {tab === 'Community' && (
+              <CommunityPanel
+                area={area}
+                profile={profile}
+                onProfileChanged={load}
+              />
+            )}
+            {tab === 'Operations' && moderator && <OpsPanel />}
             {tab === 'Notifications' && (
               <div className={panel}>
                 <h2 className="text-xl font-bold">Your local inbox</h2>
@@ -633,13 +711,18 @@ export default function Dashboard() {
                         <div className="mt-3 flex gap-4">
                           <button
                             className="text-sm font-bold underline"
-                            onClick={() =>
+                            onClick={() => {
+                              if (n.payload?.sosId) {
+                                setSelected(null);
+                                setTab('SOS');
+                                return;
+                              }
                               openReport(
                                 n.payload?.reportId || n.incidentIdOrSosId,
-                              )
-                            }
+                              );
+                            }}
                           >
-                            Open report
+                            {n.payload?.sosId ? 'Open SOS' : 'Open report'}
                           </button>
                           {n.deliveryState !== 'acknowledged' && (
                             <button
@@ -771,8 +854,9 @@ export default function Dashboard() {
               <h2 className="font-bold">Pilot scope</h2>
               <p className="mt-3 text-xs leading-relaxed text-ink-soft">
                 Manual area selection keeps the feed useful without location
-                permission. Reports use approximate area centres. SOS is
-                deferred until responder coverage is agreed and tested.
+                permission. Reports use approximate area centres. SOS alerts
+                are routed to responders whose demo coverage area contains the
+                signal; no external emergency service is contacted.
               </p>
             </div>
           </aside>

@@ -182,9 +182,12 @@ describe('ModerationService', () => {
         {
           id: 'report-1',
           description: 'x'.repeat(200),
+          category: 'security',
+          metadata: { areaName: 'Yaba' },
           state: 'unverified',
           submittedAt: new Date('2024-01-01T00:00:00Z'),
           reporterId: 'resident-1',
+          reporter: { displayName: 'Ada' },
         },
       ]);
 
@@ -194,8 +197,15 @@ describe('ModerationService', () => {
       expect(result[0].id).toBe('report-1');
       expect(result[0].targetType).toBe(ModerationTargetType.REPORT);
       expect(result[0].targetPreview).toHaveLength(160);
+      expect(result[0].category).toBe('security');
+      expect(result[0].areaName).toBe('Yaba');
+      expect(result[0].reporterDisplayName).toBe('Ada');
       expect(reportRepo.find).toHaveBeenCalledWith(
-        expect.objectContaining({ take: 50, skip: 0 }),
+        expect.objectContaining({
+          relations: ['reporter'],
+          take: 50,
+          skip: 0,
+        }),
       );
     });
 

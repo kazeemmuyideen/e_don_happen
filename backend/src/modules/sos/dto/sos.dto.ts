@@ -54,6 +54,15 @@ export class CreateSosDto {
   @IsString()
   @MaxLength(500)
   message?: string;
+
+  @ApiPropertyOptional({
+    maxLength: 200,
+    description: 'Human landmark or address shown to responders',
+  })
+  @IsOptional()
+  @IsString()
+  @MaxLength(200)
+  locationLabel?: string;
 }
 
 export class UpdateSosStateDto {

@@ -1,7 +1,6 @@
 import {
   IsIn,
   IsNotEmpty,
-  IsObject,
   IsOptional,
   IsString,
   MaxLength,
@@ -35,11 +34,6 @@ export class UploadEvidenceDto {
   @IsString()
   @IsNotEmpty()
   data: string;
-
-  @ApiPropertyOptional()
-  @IsOptional()
-  @IsObject()
-  mediaMetadata?: Record<string, any>;
 }
 
 export class ModerateEvidenceDto {

@@ -193,6 +193,7 @@ export class ModerationService {
         { state: ReportState.DISPUTED },
         { state: ReportState.CORROBORATED },
       ],
+      relations: ['reporter'],
       order: { submittedAt: 'DESC' },
       take: Math.min(100, Math.max(1, limit)),
       skip: Math.max(0, offset),
@@ -207,6 +208,10 @@ export class ModerationService {
           currentState: report.state,
           submittedAt: report.submittedAt,
           reporterId: report.reporterId,
+          category: report.category,
+          areaName: report.metadata?.areaName || 'Lagos',
+          description: report.description,
+          reporterDisplayName: report.reporter?.displayName,
         }),
     );
   }

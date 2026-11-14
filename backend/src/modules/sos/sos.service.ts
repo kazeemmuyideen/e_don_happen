@@ -51,6 +51,8 @@ export class SosService {
         manager.create(SOSRequest, {
           requesterId,
           incidentType: dto.incidentType,
+          message: dto.message ?? null,
+          locationLabel: dto.locationLabel ?? null,
           locationSnapshot: {
             type: 'Point',
             coordinates: [dto.longitude, dto.latitude],
@@ -204,6 +206,25 @@ export class SosService {
       sos.state = SosState.ACKNOWLEDGED;
       await this.sosRepo.save(sos);
     }
+    const responder = await this.userRepo.findOneBy({ id: userId });
+    await this.db.manager.save(
+      NotificationDelivery,
+      this.db.manager.create(NotificationDelivery, {
+        incidentIdOrSosId: sos.id,
+        recipientId: sos.requesterId,
+        channel: 'in_app',
+        provider: 'local-inbox',
+        attempt: 1,
+        deliveryState: 'delivered',
+        pushState: 'queued',
+        timestamps: { deliveredAt: new Date() },
+        payload: {
+          title: 'Responder acknowledged your SOS',
+          body: `${responder?.displayName || 'A responder'} is responding to your ${sos.incidentType} SOS.`,
+          sosId: sos.id,
+        },
+      }),
+    );
     return this.get(userId, sosId);
   }
 
@@ -227,6 +248,30 @@ export class SosService {
       };
     }
     await this.sosRepo.save(sos);
+    const recipients = await this.recipientRepo.find({
+      where: { sosId: sos.id },
+    });
+    for (const recipient of recipients) {
+      if (recipient.recipientId === userId) continue;
+      await this.db.manager.save(
+        NotificationDelivery,
+        this.db.manager.create(NotificationDelivery, {
+          incidentIdOrSosId: sos.id,
+          recipientId: recipient.recipientId,
+          channel: 'in_app',
+          provider: 'local-inbox',
+          attempt: 1,
+          deliveryState: 'delivered',
+          pushState: 'queued',
+          timestamps: { deliveredAt: new Date() },
+          payload: {
+            title: `SOS ${dto.state}`,
+            body: `The ${sos.incidentType} SOS near your coverage area is now ${dto.state}.`,
+            sosId: sos.id,
+          },
+        }),
+      );
+    }
     return this.get(userId, sosId);
   }
 
@@ -236,6 +281,8 @@ export class SosService {
       id: sos.id,
       requesterId: sos.requesterId,
       incidentType: sos.incidentType,
+      message: sos.message,
+      locationLabel: sos.locationLabel,
       state: sos.state,
       location:
         Array.isArray(coordinates) && coordinates.length === 2
@@ -256,6 +303,7 @@ export class SosService {
             displayName: sos.requester.displayName,
           }
         : undefined,
+      recipientCount: (sos.recipients ?? []).length,
       recipients: (sos.recipients ?? []).map((recipient: SOSRecipient) => ({
         recipientId: recipient.recipientId,
         role: recipient.role,

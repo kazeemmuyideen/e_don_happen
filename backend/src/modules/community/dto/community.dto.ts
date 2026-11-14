@@ -129,3 +129,11 @@ export class AssignCommunityAdminDto {
   @IsUUID()
   userId: string;
 }
+
+export class CommunityUserLookupDto {
+  @ApiProperty({ example: '+2348012345678' })
+  @IsString()
+  @IsNotEmpty()
+  @MaxLength(20)
+  phone: string;
+}

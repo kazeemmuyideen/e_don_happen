@@ -2,13 +2,16 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
+  OnApplicationShutdown,
+  OnModuleInit,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
-import { Repository } from 'typeorm';
+import { LessThan, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
 import { dirname, join, resolve, sep } from 'node:path';
 import { EvidenceAsset } from '../entities/evidence-asset.entity.js';
 import { Report } from '../entities/report.entity.js';
@@ -28,7 +31,10 @@ const EXTENSIONS: Record<string, string> = {
 };
 
 @Injectable()
-export class EvidenceService {
+export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
+  private readonly logger = new Logger(EvidenceService.name);
+  private retentionTimer?: NodeJS.Timeout;
+
   constructor(
     @InjectRepository(EvidenceAsset)
     private readonly evidenceRepo: Repository<EvidenceAsset>,
@@ -40,6 +46,30 @@ export class EvidenceService {
   ) {}
 
   async upload(userId: string, reportId: string, dto: UploadEvidenceDto) {
+    const buffer = this.decode(dto.data);
+    if (this.detectMime(buffer) !== dto.mimeType)
+      throw new BadRequestException(
+        'Evidence contents do not match the declared image type',
+      );
+    return this.store(userId, reportId, buffer, dto.fileName);
+  }
+
+  async uploadFile(
+    userId: string,
+    reportId: string,
+    file?: { buffer?: Buffer; originalname?: string },
+  ) {
+    if (!file?.buffer?.length)
+      throw new BadRequestException('Evidence file is empty');
+    return this.store(userId, reportId, file.buffer, file.originalname);
+  }
+
+  private async store(
+    userId: string,
+    reportId: string,
+    buffer: Buffer,
+    fileName?: string,
+  ) {
     const report = await this.findReport(reportId);
     const user = await this.findUser(userId);
     if (report.reporterId !== userId && !this.isModerator(user))
@@ -47,7 +77,6 @@ export class EvidenceService {
         'Only the reporter or a moderator can attach evidence',
       );
 
-    const buffer = this.decode(dto.data);
     const maxBytes = this.maxBytes;
     if (buffer.length === 0)
       throw new BadRequestException('Evidence file is empty');
@@ -55,34 +84,69 @@ export class EvidenceService {
       throw new BadRequestException(
         `Evidence file exceeds the ${Math.floor(maxBytes / 1024)}KB limit`,
       );
-    this.assertMagicBytes(buffer, dto.mimeType);
+    const mimeType = this.detectMime(buffer);
+    if (!mimeType)
+      throw new BadRequestException(
+        'Evidence must be a PNG, JPEG or WebP image',
+      );
 
     const storageDir = resolve(this.storageDir);
     const storageKey = join(
       reportId,
-      `${randomUUID()}.${EXTENSIONS[dto.mimeType]}`,
+      `${randomUUID()}.${EXTENSIONS[mimeType]}`,
     );
     const fullPath = join(storageDir, storageKey);
     await mkdir(dirname(fullPath), { recursive: true });
     await writeFile(fullPath, buffer);
 
     const retentionDeadline = new Date();
-    retentionDeadline.setDate(retentionDeadline.getDate() + RETENTION_DAYS);
+    retentionDeadline.setDate(
+      retentionDeadline.getDate() + this.retentionDays,
+    );
     const asset = await this.evidenceRepo.save(
       this.evidenceRepo.create({
         reportId,
         storageKey,
         mediaMetadata: {
-          fileName: dto.fileName,
-          mimeType: dto.mimeType,
+          fileName: this.safeFileName(fileName),
+          mimeType,
           sizeBytes: buffer.length,
-          ...dto.mediaMetadata,
         },
         moderationState: 'pending',
         retentionDeadline,
       }),
     );
     return this.present(asset);
+  }
+
+  onModuleInit() {
+    if (!this.retentionEnabled) return;
+    this.retentionTimer = setInterval(
+      () => this.runRetention().catch((error) => this.logger.error(error)),
+      this.retentionIntervalMs,
+    );
+    this.retentionTimer.unref?.();
+  }
+
+  onApplicationShutdown() {
+    if (this.retentionTimer) clearInterval(this.retentionTimer);
+  }
+
+  async runRetention(now = new Date()) {
+    const expired = await this.evidenceRepo.find({
+      where: { retentionDeadline: LessThan(now) },
+      take: 500,
+    });
+    if (!expired.length) return 0;
+    const storageDir = resolve(this.storageDir);
+    for (const asset of expired) {
+      const fullPath = resolve(storageDir, asset.storageKey);
+      if (!fullPath.startsWith(storageDir + sep)) continue;
+      await unlink(fullPath).catch(() => {});
+    }
+    await this.evidenceRepo.remove(expired);
+    this.logger.log(`Removed ${expired.length} expired evidence asset(s)`);
+    return expired.length;
   }
 
   async list(userId: string, reportId: string) {
@@ -160,24 +224,31 @@ export class EvidenceService {
     }
   }
 
-  private assertMagicBytes(buffer: Buffer, mimeType: string) {
-    const valid =
-      (mimeType === 'image/jpeg' &&
-        buffer[0] === 0xff &&
-        buffer[1] === 0xd8 &&
-        buffer[2] === 0xff) ||
-      (mimeType === 'image/png' &&
-        buffer[0] === 0x89 &&
-        buffer[1] === 0x50 &&
-        buffer[2] === 0x4e &&
-        buffer[3] === 0x47) ||
-      (mimeType === 'image/webp' &&
-        buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
-        buffer.subarray(8, 12).toString('ascii') === 'WEBP');
-    if (!valid)
-      throw new BadRequestException(
-        'Evidence contents do not match the declared image type',
-      );
+  private detectMime(buffer: Buffer): string | null {
+    if (
+      buffer[0] === 0xff &&
+      buffer[1] === 0xd8 &&
+      buffer[2] === 0xff
+    )
+      return 'image/jpeg';
+    if (
+      buffer[0] === 0x89 &&
+      buffer[1] === 0x50 &&
+      buffer[2] === 0x4e &&
+      buffer[3] === 0x47
+    )
+      return 'image/png';
+    if (
+      buffer.subarray(0, 4).toString('ascii') === 'RIFF' &&
+      buffer.subarray(8, 12).toString('ascii') === 'WEBP'
+    )
+      return 'image/webp';
+    return null;
+  }
+
+  private safeFileName(fileName?: string) {
+    const base = (fileName || 'evidence').split(/[\\/]/).pop() || 'evidence';
+    return base.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 120);
   }
 
   private async findReport(id: string) {
@@ -206,11 +277,24 @@ export class EvidenceService {
     return this.config.get<number>('evidence.maxBytes') ?? 5 * 1024 * 1024;
   }
 
+  private get retentionDays() {
+    return this.config.get<number>('evidence.retentionDays') ?? RETENTION_DAYS;
+  }
+
+  private get retentionEnabled() {
+    return this.config.get<boolean>('evidence.retentionEnabled') ?? true;
+  }
+
+  private get retentionIntervalMs() {
+    return (
+      this.config.get<number>('evidence.retentionIntervalMs') ?? 24 * 3600_000
+    );
+  }
+
   private present(asset: EvidenceAsset) {
     return {
       id: asset.id,
       reportId: asset.reportId,
-      storageKey: asset.storageKey,
       fileName: asset.mediaMetadata?.fileName,
       mimeType: asset.mediaMetadata?.mimeType,
       sizeBytes: asset.mediaMetadata?.sizeBytes,

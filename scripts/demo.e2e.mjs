@@ -2,7 +2,7 @@ import { test, before, after } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
 import pg from 'pg';
-import { writeFile, readFile, unlink } from 'node:fs/promises';
+import { writeFile, readFile, unlink, rm } from 'node:fs/promises';
 import { resolve } from 'node:path';
 import { randomInt } from 'node:crypto';
 
@@ -161,6 +161,11 @@ after(async () => {
   }
   await db.end();
   await unlink(otpFile).catch(() => {});
+  await rm(resolve('.local/evidence'), { recursive: true, force: true });
+  await rm(resolve('backend/.local/evidence'), {
+    recursive: true,
+    force: true,
+  });
 });
 
 test('frontend-facing API journey and trust boundaries', async (t) => {
@@ -633,6 +638,26 @@ test('community safety, SOS, evidence, incidents, billing and analytics', async 
   });
 
   await t.test('community admin manages responders', async () => {
+    const lookedUp = await call(
+      `/communities/${community.id}/users/lookup?phone=${encodeURIComponent(
+        responder.phone,
+      )}`,
+      { token: admin.token },
+    );
+    assert.equal(lookedUp.status, 200);
+    assert.equal(lookedUp.data.id, responder.user.id);
+    assert.equal(
+      (
+        await call(
+          `/communities/${community.id}/users/lookup?phone=${encodeURIComponent(
+            responder.phone,
+          )}`,
+          { token: resident.token },
+        )
+      ).status,
+      403,
+    );
+
     const added = await call(`/communities/${community.id}/responders`, {
       token: admin.token,
       method: 'POST',
@@ -735,6 +760,39 @@ test('community safety, SOS, evidence, incidents, billing and analytics', async 
       JSON.stringify(upload.data) + '\n' + serverLog,
     );
     assert.equal(upload.data.moderationState, 'pending');
+
+    const spoofed = await call(`/reports/${report.data.id}/evidence`, {
+      token: resident.token,
+      method: 'POST',
+      body: {
+        fileName: 'spoof.png',
+        mimeType: 'image/png',
+        data: PNG_BASE64,
+        mediaMetadata: { mimeType: 'text/html' },
+      },
+    });
+    assert.equal(spoofed.status, 400);
+
+    const largePng = Buffer.alloc(1_500_000);
+    largePng.set(Buffer.from(PNG_BASE64, 'base64'));
+    const form = new FormData();
+    form.append('file', new Blob([largePng], { type: 'image/png' }), 'large.png');
+    const multipart = await fetch(
+      base + `/reports/${report.data.id}/evidence/upload`,
+      {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${resident.token}` },
+        body: form,
+      },
+    );
+    const multipartBody = await multipart.json();
+    assert.equal(
+      multipart.status,
+      201,
+      JSON.stringify(multipartBody) + '\n' + serverLog,
+    );
+    assert.equal(multipartBody.sizeBytes, largePng.length);
+    assert.equal(multipartBody.mimeType, 'image/png');
 
     const hidden = await call(`/reports/${report.data.id}/evidence`, {
       token: responder.token,

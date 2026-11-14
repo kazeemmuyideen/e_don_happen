@@ -273,6 +273,18 @@ export class ModerationQueueItemDto {
   currentState: string;
 
   @ApiPropertyOptional()
+  category?: string;
+
+  @ApiPropertyOptional()
+  areaName?: string;
+
+  @ApiPropertyOptional()
+  description?: string;
+
+  @ApiPropertyOptional()
+  reporterDisplayName?: string;
+
+  @ApiPropertyOptional()
   flagCount?: number;
 
   @ApiPropertyOptional()

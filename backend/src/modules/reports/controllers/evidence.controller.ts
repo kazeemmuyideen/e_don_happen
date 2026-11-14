@@ -9,11 +9,15 @@ import {
   Request,
   Res,
   StreamableFile,
+  UploadedFile,
   UseGuards,
+  UseInterceptors,
 } from '@nestjs/common';
 import { AuthGuard } from '@nestjs/passport';
+import { FileInterceptor } from '@nestjs/platform-express';
 import {
   ApiBearerAuth,
+  ApiConsumes,
   ApiOperation,
   ApiTags,
 } from '@nestjs/swagger';
@@ -38,6 +42,20 @@ export class EvidenceController {
     @Body() dto: UploadEvidenceDto,
   ) {
     return this.evidenceService.upload(req.user.id, reportId, dto);
+  }
+
+  @Post('reports/:reportId/evidence/upload')
+  @ApiConsumes('multipart/form-data')
+  @UseInterceptors(
+    FileInterceptor('file', { limits: { fileSize: 6 * 1024 * 1024 } }),
+  )
+  @ApiOperation({ summary: 'Upload image evidence as multipart form data' })
+  uploadFile(
+    @Request() req: any,
+    @Param('reportId', ParseUUIDPipe) reportId: string,
+    @UploadedFile() file: any,
+  ) {
+    return this.evidenceService.uploadFile(req.user.id, reportId, file);
   }
 
   @Get('reports/:reportId/evidence')

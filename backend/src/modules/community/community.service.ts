@@ -18,6 +18,7 @@ import {
   UpdateCommunityDto,
   UpdateResponderDto,
 } from './dto/community.dto.js';
+import { normalizePhone } from '../identity/utils/phone.js';
 
 @Injectable()
 export class CommunityService {
@@ -116,6 +117,22 @@ export class CommunityService {
       await manager.save(User, user);
     });
     return this.get(id);
+  }
+
+  async lookupUser(actorId: string, id: string, phone: string) {
+    const community = await this.findOrFail(id);
+    await this.assertCanAdmin(actorId, community);
+    const user = await this.userRepo.findOne({
+      where: { phone: normalizePhone(phone) },
+    });
+    if (!user) throw new NotFoundException('No account uses that phone number');
+    return {
+      id: user.id,
+      displayName: user.displayName,
+      phone: user.phone,
+      role: user.role,
+      communityId: user.communityId,
+    };
   }
 
   async updateResponder(

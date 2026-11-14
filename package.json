@@ -11,6 +11,7 @@
     "build": "npm run build --workspace backend && npm run build --workspace frontend",
     "test": "npm run test --workspace backend",
     "test:e2e": "node --env-file=backend/.env --test scripts/demo.e2e.mjs",
+    "health": "node scripts/healthcheck.mjs",
     "demo:seed": "npm run demo:seed --workspace backend",
     "db:up": "docker compose -p signal-demo up -d --wait",
     "db:down": "docker compose -p signal-demo down",

@@ -159,6 +159,49 @@ All routes below require a bearer token unless noted.
 
 SOS creation snapshots a rounded point, finds active responders whose coverage area contains the point (or whose community boundary does), plus that community's admin, excludes the requester, and writes both `sos_recipients` and in-app `notification_deliveries` rows in one transaction. Community boundaries and responder coverage areas are validated as closed GeoJSON polygons. Billing records plan, status, renewal date (30 days), and an optional external reference; payment capture is not implemented. Analytics uses grouped counts and supports a 1-90 day window.
 
+## Monitoring and uptime
+
+`GET /api/health` is public and is the intended external probe. It runs `SELECT 1` against PostgreSQL on every request:
+
+- `200` with `{"status":"ok","database":"up","uptimeSeconds":123,"timestamp":"..."}` when the database answers.
+- `503` with `{"status":"error","database":"down","timestamp":"..."}` when it does not.
+
+It checks database connectivity only. Redis, the notification/push worker, provider delivery, and disk usage are not covered. `uptimeSeconds` is process uptime and resets on restart, so it is not a reliable restart or deploy signal on its own. The dashboard Operations tab is an in-app snapshot for moderators, not an alerting system.
+
+Poll every 30-60 seconds with a 5 second timeout. Alert on a non-200 status, invalid JSON, or a `database` value other than `up`; treat two consecutive failures as an incident to avoid flapping. Run the monitor outside the host it watches so a host or network outage still alerts. The probe exposes no tokens or user data, so it can stay public; keep Swagger and the dashboard behind their normal access controls.
+
+```bash
+curl -fsS --max-time 5 https://signal.example.com/api/health
+npm run health
+HEALTH_URL=https://signal.example.com/api/health npm run health
+```
+
+`npm run health` (`scripts/healthcheck.mjs`) defaults to `http://127.0.0.1:3000/api/health` and exits non-zero when the endpoint is unreachable, returns a non-2xx status, returns invalid JSON, or reports `status`/`database` other than `ok`/`up`. `HEALTH_TIMEOUT_MS` overrides the 5000 ms timeout. Use it in cron, CI smoke tests, or container health checks. It does not replace a remote monitor because it can share the host and network path.
+
+Container health check:
+
+```dockerfile
+HEALTHCHECK --interval=30s --timeout=5s --start-period=30s --retries=2 \
+  CMD node -e "fetch('http://127.0.0.1:3000/api/health').then(async r=>{const j=await r.json();process.exit(r.ok&&j.status==='ok'&&j.database==='up'?0:1)}).catch(()=>process.exit(1))"
+```
+
+Kubernetes probes:
+
+```yaml
+readinessProbe:
+  httpGet: { path: /api/health, port: 3000 }
+  periodSeconds: 30
+  timeoutSeconds: 5
+  failureThreshold: 2
+livenessProbe:
+  httpGet: { path: /api/health, port: 3000 }
+  periodSeconds: 60
+  timeoutSeconds: 5
+  failureThreshold: 3
+```
+
+Point an external service (Better Stack, UptimeRobot, Pingdom, or a cloud uptime check) at the same URL and assert both HTTP 200 and the JSON body `database: "up"` where the provider supports body assertions. Prefer a monitor in a different region or provider from the deployment. Alert routing, on-call ownership, and status-page publication are deployment decisions not implemented in this repository.
+
 ## Subscriptions, inbox, and push
 
 A subscription uses a composite user/category key and stores a centre, radius in kilometres (0.1-100), priority, and optional quiet hours. Default centre is approximately Lagos (6.5244, 3.3792). The UI uses selected pilot-area centres and typically five kilometres. Category preference changes are scoped to the authenticated user. The current read-then-save subscription upsert can race against the composite key; production needs an atomic upsert.
@@ -362,7 +405,7 @@ This implementation has development defaults and incomplete security/operations 
 2. Implement real SMS delivery and canonical phone normalization; move OTP/rate-limit state to shared storage; add IP/device throttles, fraud controls, refresh rotation/revocation, secret validation, and appropriate security headers/CSP.
 3. Build reviewed versioned migrations, create PostGIS deliberately, use least-privilege credentials, disable synchronize, and test upgrades/rollback on a copy. Add encrypted backups, retention policy, and restore drills. Avoid treating database down as backup.
 4. Deploy a stable HTTPS origin with TLS termination/reverse proxy, same-origin /api routing, correct CORS, explicit NODE_ENV=production, managed secrets, persistent VAPID keys, and nonpublic database/Redis. The loopback API needs an ingress proxy on the same host or an explicit binding redesign for separate containers.
-5. Containerize or supervise processes, add health/readiness checks, structured redacted logs, error tracking, metrics, graceful worker drain, and push retry/queue monitoring. Installed telemetry dependencies do not mean telemetry is configured.
+5. Containerize or supervise processes, add health/readiness checks, structured redacted logs, error tracking, metrics, graceful worker drain, and push retry/queue monitoring. Installed telemetry dependencies do not mean telemetry is configured. See [Monitoring and uptime](#monitoring-and-uptime) for the external probe contract, exit-code script, and example container/orchestrator checks.
 6. Review indexes/query plans and per-report profile-count queries, paginate inbox/history, use atomic subscription upserts/deduplication, add load/concurrency tests, and establish Web Push provider/browser acceptance tests. Decide under-review vote policy and local timezone handling.
 7. Harden the newly completed workflows: validate SOS escalation/sharing policy semantics, add real payment capture and plan enforcement for billing, define responder dispatch SLAs, add evidence virus scanning/object storage and retention enforcement, and decide badge wording and false-report/abuse handling with the product owner.
 8. Establish CI checks, environment-separated deployment, dependency review, accessibility/browser testing, explicit licensing, privacy/consent/terms, deletion/retention procedures, and real incident escalation disclaimers in product policy. Do not imply emergency dispatch currently exists.

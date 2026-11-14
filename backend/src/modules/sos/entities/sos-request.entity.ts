@@ -19,6 +19,12 @@ export class SOSRequest {
   @Column({ type: 'varchar', length: 100, name: 'incident_type' })
   incidentType: string;
 
+  @Column({ type: 'varchar', length: 500, nullable: true })
+  message: string | null;
+
+  @Column({ type: 'varchar', length: 200, name: 'location_label', nullable: true })
+  locationLabel: string | null;
+
   @Column({
     type: 'geometry',
     spatialFeatureType: 'Point',
