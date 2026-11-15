@@ -109,7 +109,11 @@ export class AuthController {
     @Request() req: any,
     @Body() body: AssignResponderDto,
   ) {
-    return this.authService.assignResponderRole(body.userId, body.communityId);
+    return this.authService.assignResponderRole(
+      req.user.id,
+      body.userId,
+      body.communityId,
+    );
   }
 
   @Post('assign-moderator')
@@ -122,7 +126,7 @@ export class AuthController {
     @Request() req: any,
     @Body() body: UserTargetDto,
   ) {
-    return this.authService.assignModeratorRole(body.userId);
+    return this.authService.assignModeratorRole(req.user.id, body.userId);
   }
 
   @Post('assign-community-admin')
@@ -136,6 +140,7 @@ export class AuthController {
     @Body() body: AssignCommunityAdminDto,
   ) {
     return this.authService.assignCommunityAdminRole(
+      req.user.id,
       body.userId,
       body.communityId,
     );
@@ -151,7 +156,11 @@ export class AuthController {
     @Request() req: any,
     @Body() body: UserAccountActionDto,
   ) {
-    return this.authService.suspendUser(body.userId, body.reason);
+    return this.authService.suspendUser(
+      req.user.id,
+      body.userId,
+      body.reason,
+    );
   }
 
   @Post('ban')
@@ -164,7 +173,11 @@ export class AuthController {
     @Request() req: any,
     @Body() body: UserAccountActionDto,
   ) {
-    return this.authService.banUser(body.userId, body.reason);
+    return this.authService.banUser(
+      req.user.id,
+      body.userId,
+      body.reason,
+    );
   }
 
   @Post('reactivate')
@@ -177,7 +190,7 @@ export class AuthController {
     @Request() req: any,
     @Body() body: UserTargetDto,
   ) {
-    return this.authService.reactivateUser(body.userId);
+    return this.authService.reactivateUser(req.user.id, body.userId);
   }
 
   @Post('deactivate')

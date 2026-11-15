@@ -7,34 +7,34 @@ const STEPS = [
   {
     number: '01',
     title: 'Create your account',
-    text: 'Sign up in under a minute — just your name, email, password and where you are.',
+    text: 'Sign up with your name, phone number and pilot area. Verify the number through a WhatsApp code — no email or password.',
   },
   {
     number: '02',
-    title: 'Pick your local governments',
-    text: 'Choose up to 3 Lagos local governments during registration so we know which communities you belong to.',
+    title: 'Pick your pilot area',
+    text: 'Choose the Lagos area you want alerts for. You can change the area, radius and categories later in Preferences.',
   },
   {
     number: '03',
     title: 'Get notified',
-    text: 'When something happens at your location, everyone there hears about it instantly.',
+    text: 'Reports matching your area and categories arrive in your inbox and, if you opt in, as browser push notifications.',
   },
 ]
 
 const FEATURES = [
   {
-    title: 'Same-location alerts',
-    text: 'Only people who selected the same location receive your notification — no noise, no spam.',
+    title: 'Area and radius alerts',
+    text: 'Reports are matched to the area and radius you choose, so you see nearby activity instead of the whole city.',
     icon: <path d="M12 21s7-5.5 7-11a7 7 0 1 0-14 0c0 5.5 7 11 7 11z" />,
   },
   {
-    title: 'Real-time delivery',
-    text: 'Alerts land the moment they are sent, so nobody at your spot misses what matters.',
+    title: 'Fast inbox and optional push',
+    text: 'The inbox checks for new reports every 20 seconds; installed browsers can also receive opt-in push alerts.',
     icon: <path d="M13 2 4 14h7l-1 8 9-12h-7l1-8z" />,
   },
   {
-    title: 'Simple registration',
-    text: 'Name, email, password, location — that is the whole sign-up flow. Done before your tea cools.',
+    title: 'WhatsApp verification',
+    text: 'A short code sent through WhatsApp confirms your number. Production requires WhatsApp and an approved message template.',
     icon: (
       <>
         <path d="M16 21v-2a4 4 0 0 0-4-4H6a4 4 0 0 0-4 4v2" />
@@ -44,8 +44,8 @@ const FEATURES = [
     ),
   },
   {
-    title: 'Location-based community',
-    text: 'Connect naturally with people around you — from Ikeja to Lagos Island, your LGA to your street.',
+    title: 'Community corroboration',
+    text: 'Neighbours can confirm or dispute reports. Two independent confirmations mark a report corroborated; moderators can still verify it.',
     icon: (
       <>
         <circle cx="12" cy="12" r="9" />
@@ -55,7 +55,7 @@ const FEATURES = [
   },
   {
     title: 'Private by design',
-    text: 'Your location is only used to match you with your community. We never sell your data.',
+    text: 'Public reports use an approximate area centre, not your precise address. Do not include names or private addresses in reports.',
     icon: (
       <>
         <rect x="4" y="10" width="16" height="11" rx="2" />
@@ -64,8 +64,8 @@ const FEATURES = [
     ),
   },
   {
-    title: 'Works everywhere',
-    text: 'Install it like a native app on your phone or desktop — even when you are offline.',
+    title: 'Installable PWA',
+    text: 'Install it from a supported browser. The app shell loads offline, but publishing reports and sending SOS need a connection.',
     icon: (
       <>
         <rect x="6" y="2" width="12" height="20" rx="2.5" />
@@ -76,56 +76,56 @@ const FEATURES = [
 ]
 
 const STATS = [
-  { value: '120k+', label: 'People onboard' },
-  { value: '20', label: 'Lagos LGAs covered' },
-  { value: '2.4M', label: 'Notifications sent' },
-  { value: '<1s', label: 'Average delivery' },
+  { value: '1', label: 'Pilot area at a time' },
+  { value: '9', label: 'Report categories' },
+  { value: '20s', label: 'Inbox refresh interval' },
+  { value: '0', label: 'Emergency services contacted' },
 ]
 
 const TESTIMONIALS = [
   {
     quote:
-      'When the flood started on our street, the alert reached everybody before the water even reached the junction. E don save us serious wahala.',
-    name: 'Chinedu Okafor',
-    role: 'Resident, Lagos',
-    initials: 'CO',
+      'Illustrative scenario: a resident reports standing water near the market; neighbours confirm it and a moderator verifies the report.',
+    name: 'Demo resident',
+    role: 'Illustrative scenario',
+    initials: 'DR',
   },
   {
     quote:
-      'I set my location once during registration and now I know exactly when something happens around my campus. Simple and honestly addictive.',
-    name: 'Ama Mensah',
-    role: 'Student, Accra',
-    initials: 'AM',
+      'Illustrative scenario: a community admin adds a responder whose coverage area includes the market; an SOS is dispatched to them.',
+    name: 'Demo responder',
+    role: 'Illustrative scenario',
+    initials: 'DR',
   },
   {
     quote:
-      'Our market association uses it for closure notices. Everyone at the same location gets the message — no more rumours.',
-    name: 'Bisi Adeyemi',
-    role: 'Trader, Ibadan',
-    initials: 'BA',
+      'Illustrative scenario: a moderator reviews flagged reports, groups related ones into an incident and records a reason for each decision.',
+    name: 'Demo moderator',
+    role: 'Illustrative scenario',
+    initials: 'DM',
   },
 ]
 
 const FAQS = [
   {
     q: 'What is "E don happen"?',
-    a: 'It is a location-based notification app. You register and pick up to 3 Lagos local governments, and from then on you receive notifications from — and send notifications to — everyone who selected the same location.',
+    a: 'It is a location-aware community reporting app. You register with a phone number verified through WhatsApp, choose a pilot area, and see reports and alerts matched to that area.',
   },
   {
     q: 'How do local governments work?',
-    a: 'During registration you pick up to 3 of the 20 Lagos local governments (Ikeja, Surulere, Lagos Island…). Those LGAs become your communities, and you receive notifications from all of them.',
+    a: 'The current pilot supports one selected area at a time, with a radius and category filters. You can change them in Preferences; multi-area support is not implemented.',
   },
   {
     q: 'Is it free to use?',
-    a: 'Yes. Creating an account, receiving notifications and sending them to people at your location is completely free.',
+    a: 'The pilot is free to use. It does not process payments; community billing records are administrative placeholders.',
   },
   {
     q: 'Who can see my location?',
-    a: 'Nobody sees your precise address. Your selected local governments only match you into communities — other members see notifications, not where you live.',
+    a: 'Public reports use an approximate area centre. Responders receiving an SOS see a rounded point, your display name and any message you add. Never include names or private addresses in a report.',
   },
   {
     q: 'Do I need to keep the app open?',
-    a: 'No. Once installed as a PWA on your phone or computer, "E don happen" can alert you even when it is running in the background.',
+    a: 'The installed app can receive opt-in browser push while running in the background, but the pilot does not guarantee delivery and does not contact emergency services. The inbox refreshes while the app is open.',
   },
 ]
 
@@ -154,9 +154,9 @@ export default function Landing() {
               <span className="text-primary-dark">E don happen.</span>
             </h1>
             <p className="mt-5 max-w-lg text-base leading-relaxed text-ink-soft sm:text-lg">
-              Pick up to 3 Lagos local governments at sign-up and get notified the moment
-              something happens where you are. Everyone at the same spot, one alert — no noise
-              from anywhere else.
+              Choose a Lagos pilot area, verify your phone through WhatsApp, and see
+              reports from neighbours in that area. Confirm or dispute what you see,
+              and let moderators verify what matters. No emergency dispatch.
             </p>
             <div className="mt-8 flex flex-wrap gap-3">
               <Link to="/register" className="btn-primary">
@@ -181,8 +181,8 @@ export default function Landing() {
                 ))}
               </div>
               <p>
-                <span className="font-semibold text-ink">120,000+</span> people already
-                hearing it first
+                <span className="font-semibold text-ink">Local pilot</span> |
+                WhatsApp verification | no emergency dispatch
               </p>
             </div>
           </div>
@@ -195,7 +195,7 @@ export default function Landing() {
                   <span className="text-sm font-bold text-ink">E don happen</span>
                   <span className="flex items-center gap-1.5 rounded-full bg-primary-soft px-2.5 py-1 text-[10px] font-semibold text-ink">
                     <span className="size-1.5 rounded-full bg-primary" />
-                    Ikeja +2
+                    Yaba
                   </span>
                 </div>
                 <div className="space-y-3 p-4">
@@ -304,10 +304,10 @@ export default function Landing() {
 
           <div className="mx-auto mt-16 max-w-2xl text-center">
             <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary-dark">
-              Testimonials
+              Scenarios
             </span>
             <h2 className="mt-3 text-3xl font-extrabold tracking-tight text-ink sm:text-4xl">
-              People are already hearing it first
+              Illustrative product scenarios
             </h2>
           </div>
           <div className="mt-10 grid gap-6 md:grid-cols-3">

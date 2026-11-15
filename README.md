@@ -39,7 +39,7 @@ npm run dev
 
 Open the application at http://127.0.0.1:5173 and API documentation at http://127.0.0.1:3000/api/docs. Vite forwards `/api` to the backend on port 3000. Local PostgreSQL uses port 55432 and Redis uses 56379. `npm run db:down` stops containers while retaining database volumes.
 
-Authentication currently requires `DEMO_MODE=true` outside production. Request a code in the application and read it on the host from `backend/.local/demo-otps.json`. Codes are generated only by the backend; no SMS provider is configured. This private file must never be committed or served publicly. The seed provides fictional accounts `+2348000000001` through `+2348000000004`; the fourth is a moderator. Sample reports are illustrative.
+Production delivers OTPs through the Meta WhatsApp Cloud API using an approved authentication template; there is no SMS fallback. Set `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_OTP_SECRET` and template variables. Local demo uses `WHATSAPP_DRIVER=console`: request a code in the application and read it on the host from `backend/.local/demo-otps.json`. The console driver is rejected outside non-production demo mode, and the private mailbox must never be committed or served publicly. The seed provides fictional accounts `+2348000000001` through `+2348000000004`; the fourth is a moderator. Sample reports are illustrative.
 
 ## Commands
 

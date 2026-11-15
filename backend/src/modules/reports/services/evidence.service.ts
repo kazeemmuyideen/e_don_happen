@@ -6,13 +6,20 @@ import {
   NotFoundException,
   OnApplicationShutdown,
   OnModuleInit,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { InjectRepository } from '@nestjs/typeorm';
 import { LessThan, Repository } from 'typeorm';
 import { randomUUID } from 'node:crypto';
 import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises';
-import { dirname, join, resolve, sep } from 'node:path';
+import { dirname, resolve, sep } from 'node:path';
+import {
+  DeleteObjectCommand,
+  GetObjectCommand,
+  PutObjectCommand,
+  S3Client,
+} from '@aws-sdk/client-s3';
 import { EvidenceAsset } from '../entities/evidence-asset.entity.js';
 import { Report } from '../entities/report.entity.js';
 import { User } from '../../identity/entities/user.entity.js';
@@ -34,6 +41,7 @@ const EXTENSIONS: Record<string, string> = {
 export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
   private readonly logger = new Logger(EvidenceService.name);
   private retentionTimer?: NodeJS.Timeout;
+  private s3?: S3Client;
 
   constructor(
     @InjectRepository(EvidenceAsset)
@@ -90,14 +98,8 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
         'Evidence must be a PNG, JPEG or WebP image',
       );
 
-    const storageDir = resolve(this.storageDir);
-    const storageKey = join(
-      reportId,
-      `${randomUUID()}.${EXTENSIONS[mimeType]}`,
-    );
-    const fullPath = join(storageDir, storageKey);
-    await mkdir(dirname(fullPath), { recursive: true });
-    await writeFile(fullPath, buffer);
+    const storageKey = `${reportId}/${randomUUID()}.${EXTENSIONS[mimeType]}`;
+    await this.writeObject(storageKey, buffer, mimeType);
 
     const retentionDeadline = new Date();
     retentionDeadline.setDate(
@@ -130,6 +132,7 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
 
   onApplicationShutdown() {
     if (this.retentionTimer) clearInterval(this.retentionTimer);
+    this.s3?.destroy();
   }
 
   async runRetention(now = new Date()) {
@@ -138,12 +141,7 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
       take: 500,
     });
     if (!expired.length) return 0;
-    const storageDir = resolve(this.storageDir);
-    for (const asset of expired) {
-      const fullPath = resolve(storageDir, asset.storageKey);
-      if (!fullPath.startsWith(storageDir + sep)) continue;
-      await unlink(fullPath).catch(() => {});
-    }
+    for (const asset of expired) await this.deleteObject(asset.storageKey);
     await this.evidenceRepo.remove(expired);
     this.logger.log(`Removed ${expired.length} expired evidence asset(s)`);
     return expired.length;
@@ -199,20 +197,111 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
       report.reporterId === userId || this.isModerator(user);
     if (asset.moderationState !== 'approved' && !canSeePending)
       throw new ForbiddenException('Evidence is awaiting moderation');
-    const storageDir = resolve(this.storageDir);
-    const fullPath = resolve(storageDir, asset.storageKey);
-    if (!fullPath.startsWith(storageDir + sep))
-      throw new ForbiddenException('Invalid evidence path');
+    const buffer = await this.readObject(asset.storageKey);
+    return {
+      buffer,
+      mimeType: asset.mediaMetadata?.mimeType ?? 'application/octet-stream',
+      fileName: asset.mediaMetadata?.fileName ?? `${asset.id}`,
+    };
+  }
+
+  private async writeObject(key: string, buffer: Buffer, mimeType: string) {
+    if (this.driver === 'local') {
+      const storageDir = resolve(this.storageDir);
+      const fullPath = resolve(storageDir, key);
+      if (!fullPath.startsWith(storageDir + sep))
+        throw new ForbiddenException('Invalid evidence path');
+      await mkdir(dirname(fullPath), { recursive: true });
+      await writeFile(fullPath, buffer);
+      return;
+    }
     try {
-      const buffer = await readFile(fullPath);
-      return {
-        buffer,
-        mimeType: asset.mediaMetadata?.mimeType ?? 'application/octet-stream',
-        fileName: asset.mediaMetadata?.fileName ?? `${asset.id}`,
-      };
+      await this.s3Client.send(
+        new PutObjectCommand({
+          Bucket: this.s3Bucket,
+          Key: key,
+          Body: buffer,
+          ContentType: mimeType,
+          ServerSideEncryption: 'AES256',
+        }),
+      );
+    } catch (error) {
+      this.logger.error(
+        `S3 evidence upload failed: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+      throw new ServiceUnavailableException('Evidence storage is unavailable.');
+    }
+  }
+
+  private async readObject(key: string) {
+    if (this.driver === 'local') {
+      const storageDir = resolve(this.storageDir);
+      const fullPath = resolve(storageDir, key);
+      if (!fullPath.startsWith(storageDir + sep))
+        throw new ForbiddenException('Invalid evidence path');
+      try {
+        return await readFile(fullPath);
+      } catch {
+        throw new NotFoundException('Evidence file is missing from storage');
+      }
+    }
+    try {
+      const result = await this.s3Client.send(
+        new GetObjectCommand({ Bucket: this.s3Bucket, Key: key }),
+      );
+      const bytes = await result.Body?.transformToByteArray();
+      if (!bytes) throw new Error('empty body');
+      return Buffer.from(bytes);
     } catch {
       throw new NotFoundException('Evidence file is missing from storage');
     }
+  }
+
+  private async deleteObject(key: string) {
+    if (this.driver === 'local') {
+      const storageDir = resolve(this.storageDir);
+      const fullPath = resolve(storageDir, key);
+      if (fullPath.startsWith(storageDir + sep))
+        await unlink(fullPath).catch(() => {});
+      return;
+    }
+    await this.s3Client
+      .send(new DeleteObjectCommand({ Bucket: this.s3Bucket, Key: key }))
+      .catch((error) =>
+        this.logger.warn(
+          `S3 evidence delete failed: ${
+            error instanceof Error ? error.message : 'unknown error'
+          }`,
+        ),
+      );
+  }
+
+  private get s3Client() {
+    if (!this.s3) {
+      this.s3 = new S3Client({
+        region: this.s3Region,
+        ...(this.config.get<string>('evidence.s3Endpoint')
+          ? { endpoint: this.config.get<string>('evidence.s3Endpoint') }
+          : {}),
+        ...(this.config.get<string>('evidence.s3AccessKeyId')
+          ? {
+              credentials: {
+                accessKeyId: this.config.get<string>(
+                  'evidence.s3AccessKeyId',
+                )!,
+                secretAccessKey: this.config.get<string>(
+                  'evidence.s3SecretAccessKey',
+                )!,
+              },
+            }
+          : {}),
+        forcePathStyle:
+          this.config.get<boolean>('evidence.s3ForcePathStyle') ?? false,
+      });
+    }
+    return this.s3;
   }
 
   private decode(data: string) {
@@ -271,6 +360,27 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
 
   private get storageDir() {
     return this.config.get<string>('evidence.storageDir') ?? '.local/evidence';
+  }
+
+  private get driver() {
+    return this.config.get<string>('evidence.driver') === 's3'
+      ? 's3'
+      : 'local';
+  }
+
+  private get s3Bucket() {
+    const bucket = this.config.get<string>('evidence.s3Bucket');
+    if (!bucket)
+      throw new ServiceUnavailableException(
+        'Evidence S3 bucket is not configured.',
+      );
+    return bucket;
+  }
+
+  private get s3Region() {
+    return (
+      this.config.get<string>('evidence.s3Region') || 'us-east-1'
+    );
   }
 
   private get maxBytes() {

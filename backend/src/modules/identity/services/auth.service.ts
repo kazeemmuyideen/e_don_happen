@@ -3,6 +3,7 @@ import {
   UnauthorizedException,
   ConflictException,
   NotFoundException,
+  ForbiddenException,
 } from '@nestjs/common';
 import { UserRepository } from '../repositories/user.repository.js';
 import { OtpService } from './otp.service.js';
@@ -18,6 +19,7 @@ import {
   RefreshTokenDto,
 } from '../dto/auth.dto.js';
 import { normalizePhone } from '../utils/phone.js';
+import { AuditService } from '../../audit/audit.service.js';
 
 @Injectable()
 export class AuthService {
@@ -25,6 +27,7 @@ export class AuthService {
     private readonly userRepository: UserRepository,
     private readonly otpService: OtpService,
     private readonly jwtTokenService: JwtTokenService,
+    private readonly audit: AuditService,
   ) {}
 
   async sendOtp(
@@ -178,6 +181,7 @@ export class AuthService {
   }
 
   async assignResponderRole(
+    actorId: string,
     userId: string,
     communityId: string,
   ): Promise<User> {
@@ -195,20 +199,34 @@ export class AuthService {
     user.role = UserRole.RESPONDER;
     user.communityId = communityId;
 
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.assign_responder',
+      targetId: userId,
+      metadata: { communityId },
+    });
+    return updated;
   }
 
-  async assignModeratorRole(userId: string): Promise<User> {
+  async assignModeratorRole(actorId: string, userId: string): Promise<User> {
     const user = await this.userRepository.findById(userId);
     if (!user) {
       throw new NotFoundException('User not found');
     }
 
     user.role = UserRole.MODERATOR;
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.assign_moderator',
+      targetId: userId,
+    });
+    return updated;
   }
 
   async assignCommunityAdminRole(
+    actorId: string,
     userId: string,
     communityId: string,
   ): Promise<User> {
@@ -219,10 +237,41 @@ export class AuthService {
 
     user.role = UserRole.COMMUNITY_ADMIN;
     user.communityId = communityId;
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.assign_community_admin',
+      targetId: userId,
+      metadata: { communityId },
+    });
+    return updated;
   }
 
-  async suspendUser(userId: string, reason?: string): Promise<User> {
+  private async assertCanModerate(actorId: string, targetId: string) {
+    if (actorId === targetId) {
+      throw new ForbiddenException('You cannot moderate your own account');
+    }
+    const actor = await this.userRepository.findById(actorId);
+    if (!actor) throw new NotFoundException('Actor not found');
+    if (actor.role === UserRole.MODERATOR) {
+      const target = await this.userRepository.findById(targetId);
+      if (
+        target &&
+        [UserRole.MODERATOR, UserRole.SUPER_ADMIN].includes(target.role)
+      ) {
+        throw new ForbiddenException(
+          'Moderators cannot moderate other moderators or super admins',
+        );
+      }
+    }
+  }
+
+  async suspendUser(
+    actorId: string,
+    userId: string,
+    reason?: string,
+  ): Promise<User> {
+    await this.assertCanModerate(actorId, userId);
     const user = await this.userRepository.findById(userId);
     if (!user) {
       throw new NotFoundException('User not found');
@@ -235,10 +284,22 @@ export class AuthService {
       suspendedAt: new Date(),
     };
 
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.suspend',
+      targetId: userId,
+      reason,
+    });
+    return updated;
   }
 
-  async banUser(userId: string, reason?: string): Promise<User> {
+  async banUser(
+    actorId: string,
+    userId: string,
+    reason?: string,
+  ): Promise<User> {
+    await this.assertCanModerate(actorId, userId);
     const user = await this.userRepository.findById(userId);
     if (!user) {
       throw new NotFoundException('User not found');
@@ -251,10 +312,18 @@ export class AuthService {
       bannedAt: new Date(),
     };
 
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.ban',
+      targetId: userId,
+      reason,
+    });
+    return updated;
   }
 
-  async reactivateUser(userId: string): Promise<User> {
+  async reactivateUser(actorId: string, userId: string): Promise<User> {
+    await this.assertCanModerate(actorId, userId);
     const user = await this.userRepository.findById(userId);
     if (!user) {
       throw new NotFoundException('User not found');
@@ -263,7 +332,13 @@ export class AuthService {
     user.accountStatus = AccountStatus.ACTIVE;
     user.metadata = { ...user.metadata, reactivatedAt: new Date() };
 
-    return this.userRepository.update(user.id, user);
+    const updated = await this.userRepository.update(user.id, user);
+    await this.audit.record({
+      actorId,
+      action: 'identity.reactivate',
+      targetId: userId,
+    });
+    return updated;
   }
 
   async deactivateUser(userId: string): Promise<User> {

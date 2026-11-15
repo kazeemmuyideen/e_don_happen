@@ -1,4 +1,4 @@
-import { Module } from '@nestjs/common';
+import { MiddlewareConsumer, Module, NestModule } from '@nestjs/common';
 import { ConfigModule } from '@nestjs/config';
 import { AppController } from './app.controller.js';
 import { AppService } from './app.service.js';
@@ -14,6 +14,8 @@ import { BillingModule } from './modules/billing/billing.module.js';
 import { AnalyticsModule } from './modules/analytics/analytics.module.js';
 import { PostcodeModule } from './modules/postcode/postcode.module.js';
 import { RedisModule } from './redis/redis.module.js';
+import { AuditModule } from './modules/audit/audit.module.js';
+import { RateLimitMiddleware } from './common/rate-limit.middleware.js';
 import appConfig from './config/app.config.js';
 
 @Module({
@@ -25,6 +27,7 @@ import appConfig from './config/app.config.js';
     }),
     DatabaseModule,
     RedisModule,
+    AuditModule,
     IdentityModule,
     ReportsModule,
     IncidentsModule,
@@ -37,6 +40,10 @@ import appConfig from './config/app.config.js';
     PostcodeModule,
   ],
   controllers: [AppController],
-  providers: [AppService],
+  providers: [AppService, RateLimitMiddleware],
 })
-export class AppModule {}
+export class AppModule implements NestModule {
+  configure(consumer: MiddlewareConsumer) {
+    consumer.apply(RateLimitMiddleware).forRoutes('*');
+  }
+}

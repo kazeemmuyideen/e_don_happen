@@ -1,53 +1,155 @@
 import {
-  Injectable,
-  ServiceUnavailableException,
   HttpException,
+  Inject,
+  Injectable,
+  Optional,
+  ServiceUnavailableException,
 } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
-import { randomInt } from 'node:crypto';
-import { mkdir, writeFile, rename } from 'node:fs/promises';
-import { resolve, dirname } from 'node:path';
+import { createHmac, randomInt, timingSafeEqual } from 'node:crypto';
+import { mkdir, rename, writeFile } from 'node:fs/promises';
+import { dirname, resolve } from 'node:path';
+import type { Redis } from 'ioredis';
+import { REDIS_CLIENT } from '../../../redis/redis.module.js';
+import {
+  MemoryOtpStore,
+  RedisOtpStore,
+  type OtpRecord,
+  type OtpStore,
+} from './otp.store.js';
+import { WhatsAppService } from './whatsapp.service.js';
 
 @Injectable()
 export class OtpService {
-  private readonly otpStore = new Map<
+  private readonly store: OtpStore;
+  private readonly demoMailbox = new Map<
     string,
     { code: string; expiresAt: number; attempts: number }
   >();
   private mailboxWrite: Promise<void> = Promise.resolve();
-  private readonly requests = new Map<string, number[]>();
-  constructor(private readonly config: ConfigService) {}
 
-  async sendOtp(phone: string) {
-    if (
-      this.config.get('DEMO_MODE') !== 'true' ||
-      this.config.get('NODE_ENV') === 'production'
-    ) {
+  constructor(
+    private readonly config: ConfigService,
+    private readonly whatsapp: WhatsAppService,
+    @Optional() @Inject(REDIS_CLIENT) redis?: Redis,
+  ) {
+    this.store = redis ? new RedisOtpStore(redis) : new MemoryOtpStore();
+  }
+
+  private get demoMode() {
+    return (
+      this.config.get('DEMO_MODE') === 'true' &&
+      this.config.get('NODE_ENV') !== 'production'
+    );
+  }
+
+  private get driver() {
+    return (
+      this.config.get<string>('WHATSAPP_DRIVER') ||
+      (this.demoMode ? 'console' : 'whatsapp')
+    );
+  }
+
+  private get ttlMs() {
+    return (
+      parseInt(this.config.get<string>('WHATSAPP_OTP_TTL_SECONDS') || '300', 10) *
+      1000
+    );
+  }
+
+  private get maxAttempts() {
+    return parseInt(
+      this.config.get<string>('WHATSAPP_OTP_MAX_ATTEMPTS') || '3',
+      10,
+    );
+  }
+
+  private get rateWindowMs() {
+    return (
+      parseInt(
+        this.config.get<string>('WHATSAPP_OTP_RATE_WINDOW_SECONDS') || '900',
+        10,
+      ) * 1000
+    );
+  }
+
+  private get rateLimit() {
+    return parseInt(
+      this.config.get<string>('WHATSAPP_OTP_RATE_LIMIT') || '3',
+      10,
+    );
+  }
+
+  private hash(phone: string, code: string) {
+    const secret =
+      this.config.get<string>('WHATSAPP_OTP_SECRET') ||
+      (this.demoMode ? 'demo-otp-secret' : '');
+    if (!secret) {
       throw new ServiceUnavailableException(
-        'SMS provider is not configured. Local demo mode is required.',
+        'WhatsApp OTP secret is not configured.',
       );
     }
-    const now = Date.now();
-    for (const [key, record] of this.otpStore)
-      if (record.expiresAt <= now) this.otpStore.delete(key);
-    for (const [key, times] of this.requests)
-      if (times.every((t) => t <= now - 15 * 60000)) this.requests.delete(key);
-    const recent = (this.requests.get(phone) || []).filter(
-      (t) => t > now - 15 * 60000,
-    );
-    if (recent.length >= 3)
+    return createHmac('sha256', secret)
+      .update(`${phone}:${code}`)
+      .digest('hex');
+  }
+
+  async sendOtp(phone: string) {
+    if (this.driver === 'console' && !this.demoMode) {
+      throw new ServiceUnavailableException(
+        'Console OTP delivery is only available in local demo mode.',
+      );
+    }
+    if (this.driver === 'whatsapp' && !this.whatsapp.isConfigured()) {
+      throw new ServiceUnavailableException(
+        'WhatsApp provider is not configured.',
+      );
+    }
+
+    const recent = await this.store.incrementRate(phone, this.rateWindowMs);
+    if (recent > this.rateLimit) {
       throw new HttpException(
         'Too many OTP requests. Try again in 15 minutes.',
         429,
       );
-    this.requests.set(phone, [...recent, now]);
+    }
+
     const code = String(randomInt(100000, 1000000));
-    this.otpStore.set(phone, { code, expiresAt: now + 5 * 60000, attempts: 0 });
-    await this.persistMailbox();
+    const expiresAt = Date.now() + this.ttlMs;
+    const record: OtpRecord = {
+      codeHash: this.hash(phone, code),
+      expiresAt,
+      attempts: 0,
+    };
+    await this.store.save(phone, record, this.ttlMs);
+
+    if (this.driver === 'console') {
+      this.cleanupMailbox();
+      this.demoMailbox.set(phone, {
+        code,
+        expiresAt,
+        attempts: 0,
+      });
+      await this.persistMailbox();
+      return {
+        success: true,
+        message: 'Verification requested. Contact the demo host for your code.',
+      };
+    }
+
+    await this.whatsapp.sendOtpCode(phone, code);
     return {
       success: true,
-      message: 'Verification requested. Contact the demo host for your code.',
+      message:
+        'If this number can receive WhatsApp messages, a verification code was sent.',
     };
+  }
+
+  private cleanupMailbox() {
+    const now = Date.now();
+    for (const [phone, item] of this.demoMailbox)
+      if (item.expiresAt <= now || item.attempts >= this.maxAttempts)
+        this.demoMailbox.delete(phone);
   }
 
   private persistMailbox() {
@@ -57,9 +159,10 @@ export class OtpService {
     this.mailboxWrite = this.mailboxWrite
       .catch(() => {})
       .then(async () => {
-        const codes = [...this.otpStore]
+        const codes = [...this.demoMailbox]
           .filter(
-            ([, item]) => item.expiresAt > Date.now() && item.attempts < 3,
+            ([, item]) =>
+              item.expiresAt > Date.now() && item.attempts < this.maxAttempts,
           )
           .map(([phone, item]) => ({
             phone,
@@ -82,21 +185,43 @@ export class OtpService {
   }
 
   async verifyOtp(phone: string, code: string) {
-    const record = this.otpStore.get(phone);
-    if (!record || record.expiresAt <= Date.now())
+    const record = await this.store.get(phone);
+    if (!record || record.expiresAt <= Date.now()) {
+      await this.store.delete(phone);
       return { success: false, message: 'Request a fresh code.' };
-    if (record.attempts >= 3)
+    }
+    if (record.attempts >= this.maxAttempts) {
+      await this.store.delete(phone);
+      this.demoMailbox.delete(phone);
+      if (this.driver === 'console') await this.persistMailbox();
       return {
         success: false,
         message: 'Too many attempts. Request a fresh code.',
       };
-    record.attempts++;
-    if (record.code !== code) {
-      await this.persistMailbox();
+    }
+
+    const expected = Buffer.from(this.hash(phone, code));
+    const actual = Buffer.from(record.codeHash);
+    const matches =
+      expected.length === actual.length && timingSafeEqual(expected, actual);
+
+    if (!matches) {
+      record.attempts += 1;
+      if (record.attempts >= this.maxAttempts) {
+        await this.store.delete(phone);
+        this.demoMailbox.delete(phone);
+      } else {
+        await this.store.save(phone, record, record.expiresAt - Date.now());
+        const demo = this.demoMailbox.get(phone);
+        if (demo) demo.attempts = record.attempts;
+      }
+      if (this.driver === 'console') await this.persistMailbox();
       return { success: false, message: 'Invalid code.' };
     }
-    this.otpStore.delete(phone);
-    await this.persistMailbox();
+
+    await this.store.delete(phone);
+    this.demoMailbox.delete(phone);
+    if (this.driver === 'console') await this.persistMailbox();
     return { success: true, message: 'Phone verified.' };
   }
 }

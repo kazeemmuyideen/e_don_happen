@@ -87,7 +87,14 @@ Normal workspace execution uses backend as the API working directory. Config loa
 | JWT_REFRESH_EXPIRY | 7d | Refresh lifetime |
 | DEMO_MODE | false unless true | Demo-only OTP and schema synchronization gates |
 | CORS_ORIGIN | example http://127.0.0.1:5173 | Configured browser origin; not an authorization boundary |
-| DEMO_OTP_FILE | .local/demo-otps.json | Private mailbox, relative to backend working directory |
+| DEMO_OTP_FILE | .local/demo-otps.json | Private console-driver mailbox, relative to backend working directory |
+| WHATSAPP_DRIVER | console unless set | `console` is local demo only; production must use `whatsapp` |
+| WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID | absent | Meta WhatsApp Cloud API credentials |
+| WHATSAPP_TEMPLATE_NAME / WHATSAPP_TEMPLATE_LANGUAGE | otp_verification / en_US | Approved authentication template and language |
+| WHATSAPP_OTP_SECRET | demo fallback only | HMAC secret for stored OTP hashes; required for WhatsApp driver |
+| WHATSAPP_VERIFY_TOKEN / WHATSAPP_APP_SECRET | absent | Webhook challenge token and `X-Hub-Signature-256` secret |
+| WHATSAPP_OTP_TTL_SECONDS / WHATSAPP_OTP_MAX_ATTEMPTS | 300 / 3 | Code lifetime and failed-attempt limit |
+| WHATSAPP_OTP_RATE_LIMIT / WHATSAPP_OTP_RATE_WINDOW_SECONDS | 3 / 900 | Per-phone request limit and window |
 | WEB_PUSH_PUBLIC_KEY / WEB_PUSH_PRIVATE_KEY | absent | VAPID pair required outside demo auto-generation |
 | WEB_PUSH_SUBJECT | example mailto:demo@example.com | Push application contact identifier |
 | DEMO_PUSH_KEYS_FILE | .local/web-push-keys.json | Persistent private development VAPID pair |
@@ -100,9 +107,13 @@ TypeORM synchronization runs only with DEMO_MODE=true and NODE_ENV other than pr
 
 ## Identity and sessions
 
-The frontend requests an OTP; only the backend generates it using cryptographic randomness. OTP values are held in process memory and, in demo mode, written atomically through a temporary JSON file and rename. The API response never includes the code. Read backend/.local/demo-otps.json on the host, then enter the code in the client. This is a local demonstration transport, not SMS delivery.
+The frontend requests an OTP; only the backend generates it using cryptographic randomness. OTP records live in Redis under `otp:code:<phone>` with a TTL, an HMAC-SHA256 code hash (keyed by `WHATSAPP_OTP_SECRET`) and an attempt count, so multiple backend instances share state. Request throttling uses `otp:rate:<phone>` in Redis. The API response never includes the code.
 
-A code lasts five minutes, allows three failed attempts, and each phone can request three sends in fifteen minutes. Cleanup occurs during sends. Successful verification removes the mailbox entry. An expired code can remain physically in the file until another write, but cannot authenticate. Restarting the backend loses its authoritative in-memory codes; request another code rather than trusting a stale file. Multiple backend instances do not share OTP state. There is no IP/device rate limiter. Outside nonproduction demo mode, send-otp returns 503 because no SMS adapter is configured.
+Production delivery uses the Meta WhatsApp Cloud API with an approved authentication template. Set `WHATSAPP_DRIVER=whatsapp`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANGUAGE` and `WHATSAPP_OTP_SECRET`. Missing credentials return 503; there is no SMS fallback. In non-production demo mode the default `console` driver writes the code atomically through a temporary JSON file and rename to `DEMO_OTP_FILE`; the console driver is rejected when `NODE_ENV=production`.
+
+A code lasts five minutes, allows three failed attempts, and each phone can request three sends in fifteen minutes. Successful verification deletes the Redis record; expired records disappear through Redis TTL. The demo mailbox can retain an expired entry until the next write, but it cannot authenticate. There is no IP/device rate limiter yet.
+
+`GET /api/webhooks/whatsapp` verifies `hub.mode` and `hub.verify_token` against `WHATSAPP_VERIFY_TOKEN` and echoes the challenge. `POST /api/webhooks/whatsapp` verifies `X-Hub-Signature-256` with `WHATSAPP_APP_SECRET` and currently records only status/message counts; it does not yet process inbound commands. Both endpoints fail closed in production when secrets are absent. Meta requires a public HTTPS webhook, while the API itself binds to loopback and must sit behind a TLS-terminating proxy.
 
 Verification creates a resident when necessary, updates last login, activates pending accounts, and rejects banned, suspended, or deactivated accounts. Access and refresh JWTs use distinct secrets. JWTs are signed, not encrypted. Claims include user ID, phone, role, and community; request authentication reloads the user from the database and checks active status. Role decisions therefore use the current stored user, not just an old token claim.
 

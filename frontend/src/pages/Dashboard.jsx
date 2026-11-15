@@ -596,10 +596,23 @@ export default function Dashboard() {
                 <div>
                   <h2 className="text-xl font-bold">What did you observe?</h2>
                   <p className="mt-2 text-sm text-ink-soft">
-                    Share facts about {area}. Your report starts as unverified.
-                    Avoid names, private addresses, or speculation.
+                    Share facts about the selected area. Your report starts as
+                    unverified. Avoid names, private addresses, or speculation.
                   </p>
                 </div>
+                <label className="block text-sm font-bold">
+                  Area
+                  <select
+                    aria-label="Report area"
+                    className={`${field} mt-2`}
+                    value={area}
+                    onChange={(e) => setArea(e.target.value)}
+                  >
+                    {Object.keys(AREAS).map((name) => (
+                      <option key={name}>{name}</option>
+                    ))}
+                  </select>
+                </label>
                 <label className="block text-sm font-bold">
                   Incident category
                   <select
@@ -631,7 +644,8 @@ export default function Dashboard() {
                 <label className="block text-sm font-bold">
                   NIPOST postcode{' '}
                   <span className="font-normal text-ink-soft">
-                    (optional — pins this report to a building)
+                    (optional metadata — the public point stays at the area
+                    centre)
                   </span>
                   <input
                     className={`${field} mt-2 font-mono uppercase`}
@@ -756,9 +770,39 @@ export default function Dashboard() {
                 <h2 className="text-xl font-bold">Notification preferences</h2>
                 <PhoneNotifications />
                 <p className="text-sm text-ink-soft">
-                  Choose categories below. New subscriptions use the area and
-                  radius selected above.
+                  Choose the area, radius and categories used for new alerts.
+                  Changes apply when you save below.
                 </p>
+                <div className="grid gap-3 sm:grid-cols-2">
+                  <label className="block text-sm font-bold">
+                    Area
+                    <select
+                      aria-label="Preference area"
+                      className={`${field} mt-2`}
+                      value={area}
+                      onChange={(e) => setArea(e.target.value)}
+                    >
+                      {Object.keys(AREAS).map((name) => (
+                        <option key={name}>{name}</option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="block text-sm font-bold">
+                    Radius
+                    <select
+                      aria-label="Preference radius"
+                      className={`${field} mt-2`}
+                      value={radius}
+                      onChange={(e) => setRadius(Number(e.target.value))}
+                    >
+                      {[1, 3, 5, 10, 25].map((r) => (
+                        <option key={r} value={r}>
+                          {r} km
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
                 <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
                   {CATEGORIES.map((cat) => (
                     <label

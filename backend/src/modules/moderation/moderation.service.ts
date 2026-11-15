@@ -14,6 +14,7 @@ import { ModerationRepository } from './repositories/moderation.repository.js';
 import { Report } from '../reports/entities/report.entity.js';
 import { Incident } from '../incidents/entities/incident.entity.js';
 import { User } from '../identity/entities/user.entity.js';
+import { AuditService } from '../audit/audit.service.js';
 import {
   CreateModerationActionDto,
   UpdateModerationActionDto,
@@ -76,6 +77,7 @@ export class ModerationService {
     private readonly incidentRepo: Repository<Incident>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    private readonly audit: AuditService,
   ) {}
 
   async createAction(
@@ -108,7 +110,7 @@ export class ModerationService {
       throw new BadRequestException('A new report state is required');
     if (!Object.values(ReportState).includes(newState as ReportState))
       throw new BadRequestException('Unknown report state');
-    return this.reportRepo.manager.transaction(async (manager) => {
+    const result = await this.reportRepo.manager.transaction(async (manager) => {
       const report = await manager.findOne(Report, {
         where: { id: dto.targetId },
         lock: { mode: 'pessimistic_write' },
@@ -143,6 +145,14 @@ export class ModerationService {
         message: 'Report updated and audit record saved',
       };
     });
+    await this.audit.record({
+      actorId,
+      action: `moderation.${dto.action}`,
+      targetId: result.action.targetId,
+      reason: dto.reason,
+      metadata: { newState },
+    });
+    return result;
   }
 
   async getAction(id: string): Promise<ModerationAction | null> {
@@ -166,11 +176,19 @@ export class ModerationService {
         );
       }
     }
-    return this.moderationRepository.update(id, {
+    const updated = await this.moderationRepository.update(id, {
       reason: dto.reason,
       appealStatus: dto.appealStatus as any,
       metadata: { ...action.metadata, ...dto.metadata },
     });
+    await this.audit.record({
+      actorId,
+      action: 'moderation.update_action',
+      targetId: action.targetId,
+      reason: dto.reason,
+      metadata: { actionId: id },
+    });
+    return updated;
   }
 
   async filterActions(
@@ -302,6 +320,13 @@ export class ModerationService {
     });
     if (!updated)
       throw new NotFoundException('Failed to update moderation action');
+    await this.audit.record({
+      actorId: moderatorId,
+      action: 'moderation.review_appeal',
+      targetId: action.targetId,
+      reason: dto.reason,
+      metadata: { actionId, decision: dto.decision },
+    });
     return updated;
   }
 
@@ -316,7 +341,7 @@ export class ModerationService {
     if (dto.reportIds.length < 2) {
       throw new BadRequestException('At least two reports are required');
     }
-    return this.reportRepo.manager.transaction(async (manager) => {
+    const result = await this.reportRepo.manager.transaction(async (manager) => {
       const reports = await manager
         .getRepository(Report)
         .createQueryBuilder('report')
@@ -355,6 +380,14 @@ export class ModerationService {
         message: 'Duplicate reports merged into the primary report',
       };
     });
+    await this.audit.record({
+      actorId: moderatorId,
+      action: 'moderation.merge',
+      targetId: result.action.targetId,
+      reason: dto.reason,
+      metadata: { mergedReportIds: dto.reportIds },
+    });
+    return result;
   }
 
   async getAuditTrail(targetId: string): Promise<ModerationAction[]> {

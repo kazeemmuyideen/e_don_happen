@@ -19,7 +19,7 @@ export const databaseConfig = (): DataSourceOptions => {
     synchronize: config.database.synchronize,
     logging: config.database.logging,
     entities: [join(__dirname, '../modules/**/*.entity{.ts,.js}')],
-    migrations: [join(__dirname, '../../migrations/*{.ts,.js}')],
+    migrations: [join(__dirname, '../migrations/*{.ts,.js}')],
     subscribers: [],
     extra: {
       // PostGIS support

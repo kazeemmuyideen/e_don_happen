@@ -13,6 +13,7 @@ import {
   ReportState,
 } from './dto/moderation.dto.js';
 
+import { AuditService } from '../audit/audit.service.js';
 describe('ModerationService', () => {
   let service: ModerationService;
   let moderationRepo: any;
@@ -58,6 +59,7 @@ describe('ModerationService', () => {
         { provide: getRepositoryToken(Report), useValue: reportRepo },
         { provide: getRepositoryToken(Incident), useValue: incidentRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: AuditService, useValue: { record: vi.fn() } },
       ],
     }).compile();
 

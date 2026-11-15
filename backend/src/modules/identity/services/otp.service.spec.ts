@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, unlink, rmdir } from 'node:fs/promises';
 import { resolve, join } from 'node:path';
 import { ConfigService } from '@nestjs/config';
 import { OtpService } from './otp.service.js';
+import { WhatsAppService } from './whatsapp.service.js';
 
 describe('local demo OTP adapter', () => {
   const phone = '+2348000000001';
@@ -18,13 +19,11 @@ describe('local demo OTP adapter', () => {
     folder = await mkdtemp(resolve('.local/otp-test-'));
     mailbox = join(folder, 'codes.json');
     vi.useFakeTimers();
-    service = new OtpService(
-      new ConfigService({
-        DEMO_MODE: 'true',
-        NODE_ENV: 'development',
-        DEMO_OTP_FILE: mailbox,
-      }),
-    );
+    service = makeService({
+      DEMO_MODE: 'true',
+      NODE_ENV: 'development',
+      DEMO_OTP_FILE: mailbox,
+    });
   });
   afterEach(async () => {
     vi.useRealTimers();
@@ -70,9 +69,73 @@ describe('local demo OTP adapter', () => {
     { DEMO_MODE: 'false', NODE_ENV: 'development' },
     { DEMO_MODE: 'true', NODE_ENV: 'production' },
   ])('does not expose an OTP outside the local demo: %j', async (config) => {
-    const disabled = new OtpService(new ConfigService(config));
+    const disabled = makeService(config);
     await expect(disabled.sendOtp(phone)).rejects.toMatchObject({
       status: 503,
     });
   });
+
+  describe('WhatsApp driver', () => {
+    const whatsappConfig = {
+      DEMO_MODE: 'false',
+      NODE_ENV: 'development',
+      WHATSAPP_DRIVER: 'whatsapp',
+      WHATSAPP_ACCESS_TOKEN: 'test-token',
+      WHATSAPP_PHONE_NUMBER_ID: '123456',
+      WHATSAPP_TEMPLATE_NAME: 'otp_verification',
+      WHATSAPP_OTP_SECRET: 'test-secret',
+      DEMO_OTP_FILE: mailbox,
+    };
+    it('sends a template through WhatsApp and verifies the code', async () => {
+      const fetchMock = vi
+        .fn()
+        .mockResolvedValue(
+          new Response(JSON.stringify({ messages: [{ id: 'wamid.1' }] }), {
+            status: 200,
+          }),
+        );
+      vi.stubGlobal('fetch', fetchMock);
+      const driver = makeService(whatsappConfig);
+      const response = await driver.sendOtp(phone);
+      expect(response.message).toContain('WhatsApp');
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const request = fetchMock.mock.calls[0][1];
+      const body = JSON.parse(request.body);
+      expect(body.to).toBe('2348000000001');
+      expect(body.template.name).toBe('otp_verification');
+      const code = body.template.components[0].parameters[0].text;
+      expect(code).toMatch(/^\d{6}$/);
+      expect((await driver.verifyOtp(phone, code)).success).toBe(true);
+      vi.unstubAllGlobals();
+    });
+    it('requires credentials', async () => {
+      const missing = makeService({
+        ...whatsappConfig,
+        WHATSAPP_ACCESS_TOKEN: '',
+      });
+      await expect(missing.sendOtp(phone)).rejects.toMatchObject({
+        status: 503,
+      });
+    });
+    it('surfaces provider rejection without leaking the response body', async () => {
+      vi.stubGlobal(
+        'fetch',
+        vi.fn().mockResolvedValue(
+          new Response(JSON.stringify({ error: { message: 'bad token' } }), {
+            status: 401,
+          }),
+        ),
+      );
+      const driver = makeService(whatsappConfig);
+      await expect(driver.sendOtp(phone)).rejects.toMatchObject({
+        status: 503,
+      });
+      vi.unstubAllGlobals();
+    });
+  });
 });
+
+function makeService(config: Record<string, string>) {
+  const configService = new ConfigService(config);
+  return new OtpService(configService, new WhatsAppService(configService));
+}

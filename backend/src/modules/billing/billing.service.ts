@@ -8,6 +8,7 @@ import { Repository } from 'typeorm';
 import { Subscription } from './entities/subscription.entity.js';
 import { Community } from '../community/entities/community.entity.js';
 import { User } from '../identity/entities/user.entity.js';
+import { AuditService } from '../audit/audit.service.js';
 import { UserRole } from '../identity/interfaces/identity.interface.js';
 import {
   CreateBillingSubscriptionDto,
@@ -25,6 +26,7 @@ export class BillingService {
     private readonly communityRepo: Repository<Community>,
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
+    private readonly audit: AuditService,
   ) {}
 
   async create(actorId: string, dto: CreateBillingSubscriptionDto) {
@@ -37,6 +39,12 @@ export class BillingService {
       renewalDate: this.nextRenewalDate(),
     });
     const saved = await this.subscriptionRepo.save(subscription);
+    await this.audit.record({
+      actorId,
+      action: 'billing.create',
+      targetId: saved.id,
+      metadata: { communityId: dto.communityId, plan: dto.plan },
+    });
     return this.get(actorId, saved.id);
   }
 
@@ -70,11 +78,23 @@ export class BillingService {
     }
     if (dto.status !== undefined) subscription.status = dto.status;
     const saved = await this.subscriptionRepo.save(subscription);
+    await this.audit.record({
+      actorId,
+      action: 'billing.update',
+      targetId: id,
+      metadata: { plan: dto.plan, status: dto.status },
+    });
     return this.present(saved);
   }
 
   async cancel(actorId: string, id: string) {
-    return this.update(actorId, id, { status: 'cancelled' });
+    const result = await this.update(actorId, id, { status: 'cancelled' });
+    await this.audit.record({
+      actorId,
+      action: 'billing.cancel',
+      targetId: id,
+    });
+    return result;
   }
 
   private nextRenewalDate() {

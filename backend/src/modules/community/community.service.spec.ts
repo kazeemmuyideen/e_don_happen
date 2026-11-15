@@ -24,6 +24,7 @@ const polygon = {
   ],
 };
 
+import { AuditService } from '../audit/audit.service.js';
 describe('CommunityService', () => {
   let service: CommunityService;
   let communityRepo: any;
@@ -92,6 +93,7 @@ describe('CommunityService', () => {
         { provide: getRepositoryToken(Community), useValue: communityRepo },
         { provide: getRepositoryToken(Responder), useValue: responderRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: AuditService, useValue: { record: vi.fn() } },
         { provide: DataSource, useValue: db },
       ],
     }).compile();

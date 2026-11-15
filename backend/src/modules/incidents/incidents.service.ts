@@ -8,6 +8,7 @@ import { DataSource, In, Repository } from 'typeorm';
 import { Incident } from './entities/incident.entity.js';
 import { IncidentReportLink } from './entities/incident-report-link.entity.js';
 import { Report } from '../reports/entities/report.entity.js';
+import { AuditService } from '../audit/audit.service.js';
 import {
   CreateIncidentDto,
   IncidentQueryDto,
@@ -26,6 +27,7 @@ export class IncidentsService {
     @InjectRepository(Report)
     private readonly reportRepo: Repository<Report>,
     private readonly db: DataSource,
+    private readonly audit: AuditService,
   ) {}
 
   async create(actorId: string, dto: CreateIncidentDto) {
@@ -46,6 +48,12 @@ export class IncidentsService {
         await this.linkReportsWithin(manager, saved.id, dto.reportIds, actorId);
       }
       return saved;
+    });
+    await this.audit.record({
+      actorId,
+      action: 'incident.create',
+      targetId: incident.id,
+      metadata: { reportIds: dto.reportIds ?? [] },
     });
     return this.get(incident.id);
   }
@@ -82,6 +90,12 @@ export class IncidentsService {
     if (dto.severity !== undefined) incident.severity = dto.severity;
     if (dto.status !== undefined) incident.status = dto.status;
     await this.incidentRepo.save(incident);
+    await this.audit.record({
+      actorId,
+      action: 'incident.update',
+      targetId: id,
+      metadata: { status: dto.status, severity: dto.severity },
+    });
     return this.get(id);
   }
 
@@ -89,6 +103,12 @@ export class IncidentsService {
     const incident = await this.findOrFail(id);
     incident.verificationState = dto.verificationState;
     await this.incidentRepo.save(incident);
+    await this.audit.record({
+      actorId,
+      action: 'incident.verify',
+      targetId: id,
+      metadata: { verificationState: dto.verificationState },
+    });
     return this.get(id);
   }
 
@@ -103,6 +123,12 @@ export class IncidentsService {
         dto.linkType ?? 'corroborates',
       ),
     );
+    await this.audit.record({
+      actorId,
+      action: 'incident.link_reports',
+      targetId: id,
+      metadata: { reportIds: dto.reportIds, linkType: dto.linkType ?? 'corroborates' },
+    });
     return this.get(id);
   }
 
@@ -110,6 +136,12 @@ export class IncidentsService {
     await this.findOrFail(id);
     const result = await this.linkRepo.delete({ incidentId: id, reportId });
     if (!result.affected) throw new NotFoundException('Report link not found');
+    await this.audit.record({
+      actorId,
+      action: 'incident.unlink_report',
+      targetId: id,
+      metadata: { reportId },
+    });
     return this.get(id);
   }
 

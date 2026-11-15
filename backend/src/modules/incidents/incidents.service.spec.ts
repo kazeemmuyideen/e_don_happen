@@ -7,6 +7,7 @@ import { Incident } from './entities/incident.entity.js';
 import { IncidentReportLink } from './entities/incident-report-link.entity.js';
 import { Report } from '../reports/entities/report.entity.js';
 
+import { AuditService } from '../audit/audit.service.js';
 describe('IncidentsService', () => {
   let service: IncidentsService;
   let incidentRepo: any;
@@ -67,6 +68,7 @@ describe('IncidentsService', () => {
         },
         { provide: getRepositoryToken(Report), useValue: {} },
         { provide: DataSource, useValue: db },
+        { provide: AuditService, useValue: { record: vi.fn() } },
       ],
     }).compile();
 

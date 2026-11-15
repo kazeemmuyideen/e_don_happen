@@ -7,6 +7,7 @@ import { Community } from '../community/entities/community.entity.js';
 import { User } from '../identity/entities/user.entity.js';
 import { UserRole } from '../identity/interfaces/identity.interface.js';
 
+import { AuditService } from '../audit/audit.service.js';
 describe('BillingService', () => {
   let service: BillingService;
   let subscriptionRepo: any;
@@ -54,6 +55,7 @@ describe('BillingService', () => {
         },
         { provide: getRepositoryToken(Community), useValue: communityRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
+        { provide: AuditService, useValue: { record: vi.fn() } },
       ],
     }).compile();
 

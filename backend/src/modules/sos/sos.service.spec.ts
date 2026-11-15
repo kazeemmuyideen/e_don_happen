@@ -69,9 +69,13 @@ describe('SosService', () => {
     };
     userRepo = {
       findOne: vi.fn().mockResolvedValue({ id: 'user-1', role: UserRole.RESIDENT }),
+      findOneBy: vi
+        .fn()
+        .mockResolvedValue({ id: 'user-2', displayName: 'Zainab' }),
     };
     db = {
       transaction: vi.fn(async (cb) => cb(manager)),
+      manager,
     };
 
     const module: TestingModule = await Test.createTestingModule({

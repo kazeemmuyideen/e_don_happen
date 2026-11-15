@@ -19,6 +19,7 @@ import {
   UpdateResponderDto,
 } from './dto/community.dto.js';
 import { normalizePhone } from '../identity/utils/phone.js';
+import { AuditService } from '../audit/audit.service.js';
 
 @Injectable()
 export class CommunityService {
@@ -30,6 +31,7 @@ export class CommunityService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly db: DataSource,
+    private readonly audit: AuditService,
   ) {}
 
   async create(actorId: string, dto: CreateCommunityDto) {
@@ -46,6 +48,12 @@ export class CommunityService {
       );
       await this.promoteAdmin(manager, actorId, saved.id);
       return saved;
+    });
+    await this.audit.record({
+      actorId,
+      action: 'community.create',
+      targetId: community.id,
+      metadata: { name: dto.name },
     });
     return this.get(community.id);
   }
@@ -84,6 +92,12 @@ export class CommunityService {
       community.responderCoverageConfiguration =
         dto.responderCoverageConfiguration;
     await this.communityRepo.save(community);
+    await this.audit.record({
+      actorId,
+      action: 'community.update',
+      targetId: id,
+      metadata: { name: dto.name, status: dto.status, plan: dto.plan },
+    });
     return this.get(id);
   }
 
@@ -115,6 +129,12 @@ export class CommunityService {
       }
       user.communityId = id;
       await manager.save(User, user);
+    });
+    await this.audit.record({
+      actorId,
+      action: 'community.add_responder',
+      targetId: id,
+      metadata: { userId: dto.userId },
     });
     return this.get(id);
   }
@@ -156,6 +176,12 @@ export class CommunityService {
       responder.coverageArea = dto.coverageArea as any;
     if (dto.status !== undefined) responder.status = dto.status;
     await this.responderRepo.save(responder);
+    await this.audit.record({
+      actorId,
+      action: 'community.update_responder',
+      targetId: id,
+      metadata: { userId, status: dto.status },
+    });
     return this.get(id);
   }
 
@@ -177,6 +203,12 @@ export class CommunityService {
       user.communityId = null as unknown as string;
       await this.userRepo.save(user);
     }
+    await this.audit.record({
+      actorId,
+      action: 'community.remove_responder',
+      targetId: id,
+      metadata: { userId },
+    });
     return this.get(id);
   }
 
@@ -193,6 +225,12 @@ export class CommunityService {
       community.adminId = dto.userId;
       await manager.save(Community, community);
       await this.promoteAdmin(manager, dto.userId, id);
+    });
+    await this.audit.record({
+      actorId,
+      action: 'community.assign_admin',
+      targetId: id,
+      metadata: { userId: dto.userId },
     });
     return this.get(id);
   }

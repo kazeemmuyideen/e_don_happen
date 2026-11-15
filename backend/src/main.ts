@@ -4,13 +4,24 @@ import { SwaggerModule, DocumentBuilder } from '@nestjs/swagger';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { json, urlencoded } from 'express';
 import { AppModule } from './app.module.js';
+import { securityHeaders } from './common/security-headers.middleware.js';
 
 async function bootstrap() {
   const app = await NestFactory.create<NestExpressApplication>(AppModule, {
     bodyParser: false,
   });
+  app.disable('x-powered-by');
+  app.set('trust proxy', process.env.TRUST_PROXY === 'true' ? 1 : false);
+  app.use(securityHeaders);
   const bodyLimit = process.env.JSON_BODY_LIMIT || '8mb';
-  app.use(json({ limit: bodyLimit }));
+  app.use(
+    json({
+      limit: bodyLimit,
+      verify: (req: any, _res, buffer) => {
+        req.rawBody = buffer;
+      },
+    }),
+  );
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
   app.setGlobalPrefix('api');
   app.useGlobalPipes(

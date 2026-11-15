@@ -6,8 +6,10 @@ import { ConfigModule, ConfigService } from '@nestjs/config';
 import { User } from './entities/user.entity.js';
 import { UserLocationPreference } from './entities/user-location-preference.entity.js';
 import { AuthController } from './controllers/auth.controller.js';
+import { WhatsAppWebhookController } from './controllers/whatsapp-webhook.controller.js';
 import { AuthService } from './services/auth.service.js';
 import { OtpService } from './services/otp.service.js';
+import { WhatsAppService } from './services/whatsapp.service.js';
 import { JwtTokenService } from './services/jwt.service.js';
 import { UserRepository } from './repositories/user.repository.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
@@ -27,10 +29,11 @@ import { getJwtSecret } from './utils/jwt-config.js';
       inject: [ConfigService],
     }),
   ],
-  controllers: [AuthController],
+  controllers: [AuthController, WhatsAppWebhookController],
   providers: [
     AuthService,
     OtpService,
+    WhatsAppService,
     JwtTokenService,
     UserRepository,
     JwtStrategy,

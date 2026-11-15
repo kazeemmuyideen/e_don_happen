@@ -157,6 +157,9 @@ after(async () => {
       'DELETE FROM notification_subscriptions WHERE user_id = ANY($1::uuid[])',
       [users],
     );
+    await db.query('DELETE FROM audit_logs WHERE actor_id = ANY($1::uuid[])', [
+      users,
+    ]);
     await db.query('DELETE FROM users WHERE id = ANY($1::uuid[])', [users]);
   }
   await db.end();
@@ -937,6 +940,30 @@ test('community safety, SOS, evidence, incidents, billing and analytics', async 
       (await call('/analytics/audit-logs', { token: mod.token })).status,
       403,
     );
+  });
+
+  await t.test('audit logs are written and readiness checks Redis', async () => {
+    await db.query("UPDATE users SET role = 'super_admin' WHERE id = $1", [
+      mod.user.id,
+    ]);
+    const logs = await call('/analytics/audit-logs?limit=50', {
+      token: mod.token,
+    });
+    assert.equal(logs.status, 200);
+    assert.ok(
+      logs.data.items.some((item) => item.action.startsWith('community.')),
+      JSON.stringify(logs.data),
+    );
+    assert.ok(logs.data.items.every((item) => item.actorId));
+
+    const ready = await call('/ready');
+    assert.equal(ready.status, 200);
+    assert.equal(ready.data.database, 'up');
+    assert.equal(ready.data.redis, 'up');
+
+    const response = await fetch(base + '/health');
+    assert.equal(response.headers.get('x-content-type-options'), 'nosniff');
+    assert.equal(response.headers.get('x-powered-by'), null);
   });
 
   await t.test('health endpoint reports database connectivity', async () => {
