@@ -27,7 +27,7 @@ import {
   RefreshTokenDto,
   LoginResponseDto,
   AssignResponderDto,
-  AssignCommunityAdminDto,
+  AssignCommunityAdminWithCommunityDto,
   UserAccountActionDto,
   UserTargetDto,
 } from '../dto/auth.dto.js';
@@ -137,7 +137,7 @@ export class AuthController {
   @ApiResponse({ status: 200, description: 'Role assigned' })
   async assignCommunityAdmin(
     @Request() req: any,
-    @Body() body: AssignCommunityAdminDto,
+    @Body() body: AssignCommunityAdminWithCommunityDto,
   ) {
     return this.authService.assignCommunityAdminRole(
       req.user.id,

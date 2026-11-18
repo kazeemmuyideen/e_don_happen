@@ -129,7 +129,7 @@ describe('CommunityService', () => {
     });
 
     const userSaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === User,
+      ([entity]: [unknown]) => entity === User,
     );
     expect(userSaves).toHaveLength(1);
     expect(userSaves[0][1].role).toBe(UserRole.COMMUNITY_ADMIN);
@@ -150,11 +150,11 @@ describe('CommunityService', () => {
     });
 
     const responderSaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === Responder,
+      ([entity]: [unknown]) => entity === Responder,
     );
     expect(responderSaves).toHaveLength(1);
     const userSaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === User,
+      ([entity]: [unknown]) => entity === User,
     );
     expect(userSaves[0][1].role).toBe(UserRole.RESPONDER);
     expect(userSaves[0][1].communityId).toBe('community-1');
@@ -172,11 +172,11 @@ describe('CommunityService', () => {
     });
 
     const communitySaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === Community,
+      ([entity]: [unknown]) => entity === Community,
     );
     expect(communitySaves[0][1].adminId).toBe('user-2');
     const userSaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === User,
+      ([entity]: [unknown]) => entity === User,
     );
     expect(userSaves[0][1].role).toBe(UserRole.COMMUNITY_ADMIN);
   });

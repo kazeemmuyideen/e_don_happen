@@ -1,4 +1,5 @@
 import {
+  IsEmail,
   IsIn,
   IsOptional,
   IsString,
@@ -41,4 +42,26 @@ export class UpdateBillingSubscriptionDto {
   @IsOptional()
   @IsIn(BILLING_STATUSES)
   status?: string;
+}
+
+export class InitializePaymentDto {
+  @ApiProperty()
+  @IsUUID()
+  communityId: string;
+
+  @ApiProperty({ enum: BILLING_PLANS })
+  @IsIn(BILLING_PLANS)
+  plan: string;
+
+  @ApiPropertyOptional()
+  @IsOptional()
+  @IsEmail()
+  email?: string;
+}
+
+export class VerifyPaymentDto {
+  @ApiProperty({ maxLength: 200 })
+  @IsString()
+  @MaxLength(200)
+  reference: string;
 }

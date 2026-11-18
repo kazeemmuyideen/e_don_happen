@@ -41,6 +41,38 @@ export default () => ({
       10,
     ),
   },
+  sms: {
+    driver: process.env.OTP_DELIVERY_DRIVER || process.env.WHATSAPP_DRIVER || '',
+    apiUrl: process.env.SMS_API_URL || '',
+    apiKey: process.env.SMS_API_KEY || '',
+    senderId: process.env.SMS_SENDER_ID || '',
+  },
+  payments: {
+    provider: process.env.PAYMENT_PROVIDER || 'demo',
+    baseUrl: process.env.PAYMENT_BASE_URL || 'https://api.paystack.co',
+    secretKey: process.env.PAYMENT_SECRET_KEY || '',
+    publicKey: process.env.PAYMENT_PUBLIC_KEY || '',
+    webhookSecret: process.env.PAYMENT_WEBHOOK_SECRET || '',
+    currency: process.env.PAYMENT_CURRENCY || 'NGN',
+    callbackUrl: process.env.PAYMENT_CALLBACK_URL || '',
+  },
+  dispatch: {
+    driver: process.env.DISPATCH_DRIVER || 'off',
+    apiUrl: process.env.DISPATCH_API_URL || '',
+    apiKey: process.env.DISPATCH_API_KEY || '',
+    senderId: process.env.DISPATCH_SENDER_ID || '',
+  },
+  sos: {
+    escalationEnabled: process.env.SOS_ESCALATION_ENABLED === 'true',
+    escalationPollMs: parseInt(
+      process.env.SOS_ESCALATION_POLL_MS || '60000',
+      10,
+    ),
+    escalationMaxLevels: parseInt(
+      process.env.SOS_ESCALATION_MAX_LEVELS || '2',
+      10,
+    ),
+  },
   evidence: {
     driver: process.env.EVIDENCE_DRIVER || 'local',
     s3Bucket: process.env.S3_BUCKET || '',
@@ -55,6 +87,16 @@ export default () => ({
     retentionEnabled: process.env.EVIDENCE_RETENTION_ENABLED !== 'false',
     retentionIntervalMs: parseInt(
       process.env.EVIDENCE_RETENTION_INTERVAL_MS || '86400000',
+      10,
+    ),
+    scannerDriver: process.env.EVIDENCE_SCANNER_DRIVER || 'passthrough',
+    scannerHost: process.env.EVIDENCE_SCANNER_HOST || '127.0.0.1',
+    scannerPort: parseInt(
+      process.env.EVIDENCE_SCANNER_PORT || '3310',
+      10,
+    ),
+    scannerTimeoutMs: parseInt(
+      process.env.EVIDENCE_SCANNER_TIMEOUT_MS || '10000',
       10,
     ),
   },

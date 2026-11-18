@@ -115,8 +115,9 @@ export class PostcodeService {
           'Postcode service rejected our credentials.',
         );
       }
+      const message = error instanceof Error ? error.message : String(error);
       this.logger.warn(
-        `Postcode validation fell back to format-only check: ${(error as Error).message}`,
+        `Postcode validation fell back to format-only check: ${message}`,
       );
       return {
         postcode: compact,

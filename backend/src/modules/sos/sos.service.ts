@@ -1,12 +1,14 @@
 import {
   BadRequestException,
   ForbiddenException,
+  Inject,
   Injectable,
   Logger,
   NotFoundException,
+  Optional,
 } from '@nestjs/common';
 import { InjectRepository } from '@nestjs/typeorm';
-import { DataSource, Repository } from 'typeorm';
+import { DataSource, EntityManager, In, Repository } from 'typeorm';
 import { SOSRequest } from './entities/sos-request.entity.js';
 import { SOSRecipient } from './entities/sos-recipient.entity.js';
 import { Responder } from '../community/entities/responder.entity.js';
@@ -20,6 +22,10 @@ import {
   SosState,
   UpdateSosStateDto,
 } from './dto/sos.dto.js';
+import { DEFAULT_ESCALATION_POLICY } from './dto/escalation-policy.dto.js';
+import { DispatchService } from './services/dispatch.service.js';
+import type { EmergencyDispatchService } from './services/dispatch.service.js';
+import { AuditService } from '../audit/audit.service.js';
 
 interface NearbyRecipient {
   userId: string;
@@ -42,10 +48,14 @@ export class SosService {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly db: DataSource,
+    @Optional()
+    @Inject(DispatchService)
+    private readonly dispatch?: EmergencyDispatchService,
+    @Optional() private readonly audit?: AuditService,
   ) {}
 
   async create(requesterId: string, dto: CreateSosDto) {
-    const sos = await this.db.transaction(async (manager) => {
+    const { saved, recipients } = await this.db.transaction(async (manager) => {
       const saved = await manager.save(
         SOSRequest,
         manager.create(SOSRequest, {
@@ -58,15 +68,13 @@ export class SosService {
             coordinates: [dto.longitude, dto.latitude],
           } as any,
           sharingPolicy: dto.sharingPolicy ?? { scope: 'nearby_responders' },
-          escalationPolicy: dto.escalationPolicy ?? {
-            acknowledgeWithinMinutes: 10,
-            escalateAfterMinutes: 15,
-          },
+          escalationPolicy: dto.escalationPolicy ?? DEFAULT_ESCALATION_POLICY,
           state: SosState.ACTIVE,
         }),
       );
 
       const nearby = await this.findNearbyRecipients(
+        manager,
         dto.latitude,
         dto.longitude,
       );
@@ -112,17 +120,127 @@ export class SosService {
         );
       }
 
-      return saved;
+      return { saved, recipients };
     });
 
-    return this.get(requesterId, sos.id);
+    await this.dispatchEmergencySms(saved.id, dto, recipients, requesterId);
+
+    return this.get(requesterId, saved.id);
+  }
+
+  private async dispatchEmergencySms(
+    sosId: string,
+    dto: CreateSosDto,
+    recipients: NearbyRecipient[],
+    requesterId: string,
+  ): Promise<void> {
+    const dispatch = this.dispatch;
+    if (!dispatch?.isEnabled() || recipients.length === 0) return;
+
+    try {
+      const recipientIds = recipients.map((recipient) => recipient.userId);
+      const users =
+        (await this.userRepo.find({
+          where: { id: In(recipientIds) },
+          relations: ['locationPreference'],
+        })) ?? [];
+      const message = this.buildEmergencyMessage(dto);
+
+      for (const user of users) {
+        if (
+          !recipientIds.includes(user.id) ||
+          !this.hasEmergencySmsConsent(user)
+        )
+          continue;
+        const phone = user.phone?.trim();
+        if (!phone) continue;
+
+        const metadata = {
+          sosId,
+          recipientId: user.id,
+          incidentType: dto.incidentType,
+        };
+        try {
+          const result = await dispatch.sendSms(phone, message, metadata);
+          await this.recordDispatchAudit(
+            requesterId,
+            'sos.emergency_sms.dispatched',
+            sosId,
+            { ...metadata, providerMessageId: result.providerMessageId },
+          );
+        } catch (error) {
+          const reason =
+            error instanceof Error ? error.message : 'unknown error';
+          this.logger.error(
+            `Failed to dispatch emergency SMS for SOS ${sosId} to ${user.id}: ${reason}`,
+          );
+          await this.recordDispatchAudit(
+            requesterId,
+            'sos.emergency_sms.failed',
+            sosId,
+            { ...metadata, reason },
+          );
+        }
+      }
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : 'unknown error';
+      this.logger.error(
+        `Failed to prepare emergency SMS dispatch for SOS ${sosId}: ${reason}`,
+      );
+      await this.recordDispatchAudit(
+        requesterId,
+        'sos.emergency_sms.failed',
+        sosId,
+        { reason },
+      );
+    }
+  }
+
+  private hasEmergencySmsConsent(user: User): boolean {
+    const settings = user.privacySettings ?? {};
+    if (settings.emergencySms === false || settings.shareLocation === false)
+      return false;
+    if (user.locationPreference?.permissionState === 'denied') return false;
+    if (settings.emergencySms === true) return true;
+    return settings.showPhone === true;
+  }
+
+  private buildEmergencyMessage(dto: CreateSosDto): string {
+    const location = dto.locationLabel ? ` near ${dto.locationLabel}` : '';
+    const detail = dto.message?.trim() || 'Immediate assistance requested.';
+    return `EMERGENCY SOS: ${dto.incidentType}${location}. ${detail}`;
+  }
+
+  private async recordDispatchAudit(
+    actorId: string,
+    action: string,
+    targetId: string,
+    metadata: Record<string, unknown>,
+  ): Promise<void> {
+    if (!this.audit) return;
+    try {
+      await this.audit.record({
+        actorId,
+        action,
+        targetId,
+        source: 'sos',
+        metadata,
+      });
+    } catch (error) {
+      this.logger.error(
+        `Failed to write audit event ${action}: ${
+          error instanceof Error ? error.message : 'unknown error'
+        }`,
+      );
+    }
   }
 
   private async findNearbyRecipients(
+    manager: EntityManager,
     latitude: number,
     longitude: number,
   ): Promise<NearbyRecipient[]> {
-    const rows: NearbyRecipient[] = await this.responderRepo.manager.query(
+    const rows: NearbyRecipient[] = await manager.query(
       `SELECT DISTINCT r.user_id AS "userId", 'responder' AS role
          FROM responders r
          JOIN communities c ON c.id = r.community_id
@@ -233,8 +351,7 @@ export class SosService {
     if (!sos) throw new NotFoundException('SOS request not found');
     const user = await this.userRepo.findOne({ where: { id: userId } });
     const privileged =
-      user?.role === UserRole.MODERATOR ||
-      user?.role === UserRole.SUPER_ADMIN;
+      user?.role === UserRole.MODERATOR || user?.role === UserRole.SUPER_ADMIN;
     if (sos.requesterId !== userId && !privileged)
       throw new ForbiddenException('Only the requester can close this SOS');
     if (!OPEN_SOS_STATES.includes(sos.state as SosState))

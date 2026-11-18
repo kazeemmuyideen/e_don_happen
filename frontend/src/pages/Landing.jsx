@@ -117,7 +117,7 @@ const FAQS = [
   },
   {
     q: 'Is it free to use?',
-    a: 'The pilot is free to use. It does not process payments; community billing records are administrative placeholders.',
+    a: 'The pilot is free for residents. Community admins can add a demo billing record or initialize and verify a subscription payment from their community panel.',
   },
   {
     q: 'Who can see my location?',

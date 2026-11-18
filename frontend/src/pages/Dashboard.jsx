@@ -373,8 +373,8 @@ export default function Dashboard() {
         <div className="mb-6 rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-xs text-amber-900">
           <strong>Local pilot demo</strong> | Seeded reports are illustrative.
           Install from the HTTPS sharing link to enable optional phone
-          notifications. SMS and external emergency dispatch are not
-          connected; SOS alerts only reach responders in this app.
+          notifications. SMS delivery and external emergency dispatch require
+          provider credentials; local demo keeps SOS alerts in this app.
         </div>
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div>

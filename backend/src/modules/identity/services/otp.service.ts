@@ -18,6 +18,7 @@ import {
   type OtpStore,
 } from './otp.store.js';
 import { WhatsAppService } from './whatsapp.service.js';
+import { SmsOtpService } from './sms-otp.service.js';
 
 @Injectable()
 export class OtpService {
@@ -31,6 +32,7 @@ export class OtpService {
   constructor(
     private readonly config: ConfigService,
     private readonly whatsapp: WhatsAppService,
+    @Optional() private readonly sms?: SmsOtpService,
     @Optional() @Inject(REDIS_CLIENT) redis?: Redis,
   ) {
     this.store = redis ? new RedisOtpStore(redis) : new MemoryOtpStore();
@@ -45,6 +47,7 @@ export class OtpService {
 
   private get driver() {
     return (
+      this.config.get<string>('sms.driver') ||
       this.config.get<string>('WHATSAPP_DRIVER') ||
       (this.demoMode ? 'console' : 'whatsapp')
     );
@@ -105,6 +108,9 @@ export class OtpService {
         'WhatsApp provider is not configured.',
       );
     }
+    if (this.driver === 'sms' && !this.sms?.isConfigured()) {
+      throw new ServiceUnavailableException('SMS provider is not configured.');
+    }
 
     const recent = await this.store.incrementRate(phone, this.rateWindowMs);
     if (recent > this.rateLimit) {
@@ -134,6 +140,14 @@ export class OtpService {
       return {
         success: true,
         message: 'Verification requested. Contact the demo host for your code.',
+      };
+    }
+
+    if (this.driver === 'sms') {
+      await this.sms!.sendOtpCode(phone, code);
+      return {
+        success: true,
+        message: 'If this number can receive SMS, a verification code was sent.',
       };
     }
 

@@ -22,6 +22,11 @@
     "db:up": "docker-compose up -d",
     "db:down": "docker-compose down",
     "db:logs": "docker-compose logs -f postgres",
+    "typeorm": "node --env-file=.env ../node_modules/typeorm/cli.js -d dist/config/typeorm.datasource.js",
+    "migration:generate": "npm run typeorm -- migration:generate",
+    "migration:run": "npm run typeorm -- migration:run",
+    "migration:revert": "npm run typeorm -- migration:revert",
+    "migration:show": "npm run typeorm -- migration:show",
     "demo:seed": "node --env-file=.env dist/demo/seed.js"
   },
   "dependencies": {

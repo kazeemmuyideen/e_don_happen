@@ -31,13 +31,32 @@ jobs:
 
       - run: npm run lint --workspace backend
 
+      - name: Typecheck backend
+        run: npx tsc --noEmit --incremental false -p tsconfig.json
+        working-directory: backend
+
       - run: npm test
 
-      - name: Start demo dependencies
-        run: docker compose -p signal-demo-ci up -d --wait
+      - name: Audit production dependencies
+        run: npm audit --omit=dev --audit-level=high
 
       - name: Prepare demo environment
         run: cp backend/.env.example backend/.env
+
+      - name: Start migration database
+        run: docker compose -p signal-migration-ci up -d --wait
+
+      - name: Verify schema migration
+        run: |
+          DEMO_MODE=false npm run migration:run --workspace backend
+          DEMO_MODE=false npm run migration:show --workspace backend
+
+      - name: Stop migration database
+        if: always()
+        run: docker compose -p signal-migration-ci down -v
+
+      - name: Start demo dependencies
+        run: docker compose -p signal-demo-ci up -d --wait
 
       - run: npm run demo:seed
         env:

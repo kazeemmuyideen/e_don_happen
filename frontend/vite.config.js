@@ -32,6 +32,7 @@ export default defineConfig({
       filename: 'sw.js',
       injectManifest: {
         globPatterns: ['**/*.{js,css,html,svg,png,ico,woff2}'],
+        rollupFormat: 'iife',
       },
       includeAssets: ['favicon.svg', 'apple-touch-icon.png'],
       manifest: {

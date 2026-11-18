@@ -7,6 +7,13 @@ const field =
 const panel = 'rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6';
 const ADMIN_ROLES = ['moderator', 'super_admin'];
 
+function money(amount, currency) {
+  return new Intl.NumberFormat('en-NG', {
+    style: 'currency',
+    currency: currency || 'NGN',
+  }).format((Number(amount) || 0) / 100);
+}
+
 function squareAround(area) {
   const { latitude: lat, longitude: lng } = AREAS[area];
   const d = 0.01;
@@ -31,6 +38,8 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
   const [phone, setPhone] = useState('');
   const [candidate, setCandidate] = useState(null);
   const [plan, setPlan] = useState('standard');
+  const [paymentEmail, setPaymentEmail] = useState('');
+  const [payment, setPayment] = useState(null);
   const [subscriptions, setSubscriptions] = useState([]);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -71,8 +80,12 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
     setError('');
     setNotice('');
     try {
-      await work();
-      if (success) setNotice(success);
+      const result = await work();
+      if (success) {
+        setNotice(
+          typeof success === 'function' ? success(result) : success,
+        );
+      }
     } catch (err) {
       setError(err.message);
     } finally {
@@ -148,6 +161,45 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
     }, 'Subscription cancelled.');
   }
 
+  async function initializePayment(event) {
+    event.preventDefault();
+    await run(async () => {
+      const result = await api('/billing/payments/checkout', {
+        method: 'POST',
+        body: {
+          communityId: detail.id,
+          plan,
+          ...(paymentEmail.trim() ? { email: paymentEmail.trim() } : {}),
+        },
+      });
+      setPayment(result);
+    }, 'Payment initialized. Open the authorization link to pay, then verify it here.');
+  }
+
+  async function refreshPayment() {
+    await run(async () => {
+      setPayment(
+        await api(`/billing/payments/${encodeURIComponent(payment.reference)}`),
+      );
+    });
+  }
+
+  async function verifyPayment() {
+    await run(async () => {
+      const result = await api('/billing/payments/verify', {
+        method: 'POST',
+        body: { reference: payment.reference },
+      });
+      setPayment(result);
+      await loadDetail(detail.id);
+      return result;
+    }, (result) =>
+      result.status === 'succeeded'
+        ? 'Payment verified. The subscription is active.'
+        : `Payment status: ${result.status}. Complete checkout and verify again if needed.`,
+    );
+  }
+
   return (
     <div className="space-y-5">
       {error && (
@@ -203,7 +255,10 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                         : 'border-ink/10'
                     }`}
                     onClick={() =>
-                      run(() => loadDetail(community.id)).catch(() => {})
+                      run(async () => {
+                        setPayment(null);
+                        await loadDetail(community.id);
+                      })
                     }
                   >
                     <span className="font-bold">{community.name}</span>
@@ -303,13 +358,15 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
 
               {isAdmin && (
                 <div className={`${panel} space-y-4`}>
-                  <h2 className="text-xl font-bold">Billing record</h2>
+                  <h2 className="text-xl font-bold">Billing</h2>
                   <p className="text-sm text-ink-soft">
-                    Demo records only. No payment is captured.
+                    Add a demo billing record, or initialize and verify a
+                    subscription payment for {detail.name}.
                   </p>
-                  <form onSubmit={createSubscription} className="flex flex-wrap gap-2">
+                  <label className="block text-sm font-bold">
+                    Plan
                     <select
-                      className={`${field} flex-1`}
+                      className={`${field} mt-2`}
                       value={plan}
                       onChange={(e) => setPlan(e.target.value)}
                     >
@@ -319,34 +376,101 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                         </option>
                       ))}
                     </select>
+                  </label>
+                  <form onSubmit={createSubscription}>
                     <button className="btn-outline" disabled={busy}>
-                      Add subscription
+                      Add demo subscription
                     </button>
                   </form>
-                  <ul className="space-y-2">
-                    {subscriptions.map((subscription) => (
-                      <li
-                        key={subscription.id}
-                        className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 px-3 py-2 text-sm"
-                      >
-                        <span>
-                          {subscription.plan} | {subscription.status} | renews{' '}
-                          {new Date(subscription.renewalDate).toLocaleDateString(
-                            'en-NG',
-                          )}
+                  <form onSubmit={initializePayment} className="space-y-3">
+                    <label className="block text-sm font-bold">
+                      Payment email{' '}
+                      <span className="font-normal text-ink-soft">
+                        (optional)
+                      </span>
+                      <input
+                        className={`${field} mt-2`}
+                        type="email"
+                        value={paymentEmail}
+                        onChange={(e) => setPaymentEmail(e.target.value)}
+                        placeholder="admin@example.com"
+                      />
+                    </label>
+                    <button className="btn-primary" disabled={busy}>
+                      {busy ? 'Working...' : 'Pay / Initialize'}
+                    </button>
+                  </form>
+                  {payment && (
+                    <div className="space-y-2 rounded-2xl border border-ink/10 bg-white p-3 text-sm">
+                      <p className="font-bold">Reference: {payment.reference}</p>
+                      <p className="text-ink-soft">
+                        {payment.plan} | {money(payment.amount, payment.currency)}{' '}
+                        |{' '}
+                        <span
+                          className={
+                            payment.status === 'succeeded'
+                              ? 'font-bold text-green-800'
+                              : 'font-bold text-amber-800'
+                          }
+                        >
+                          {payment.status}
                         </span>
-                        {subscription.status === 'active' && (
-                          <button
-                            className="text-xs font-bold text-red-700 underline"
-                            disabled={busy}
-                            onClick={() => cancelSubscription(subscription.id)}
-                          >
-                            Cancel
-                          </button>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
+                      </p>
+                      {payment.authorizationUrl && (
+                        <a
+                          className="block break-all font-bold text-primary underline"
+                          href={payment.authorizationUrl}
+                          target="_blank"
+                          rel="noreferrer"
+                        >
+                          Open payment authorization link
+                        </a>
+                      )}
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          className="btn-outline"
+                          disabled={busy}
+                          onClick={verifyPayment}
+                        >
+                          Verify payment
+                        </button>
+                        <button
+                          className="btn-outline"
+                          disabled={busy}
+                          onClick={refreshPayment}
+                        >
+                          Check status
+                        </button>
+                      </div>
+                    </div>
+                  )}
+                  <div>
+                    <h3 className="text-sm font-bold">Subscriptions</h3>
+                    <ul className="mt-2 space-y-2">
+                      {subscriptions.map((subscription) => (
+                        <li
+                          key={subscription.id}
+                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 px-3 py-2 text-sm"
+                        >
+                          <span>
+                            {subscription.plan} | {subscription.status} | renews{' '}
+                            {new Date(subscription.renewalDate).toLocaleDateString(
+                              'en-NG',
+                            )}
+                          </span>
+                          {subscription.status === 'active' && (
+                            <button
+                              className="text-xs font-bold text-red-700 underline"
+                              disabled={busy}
+                              onClick={() => cancelSubscription(subscription.id)}
+                            >
+                              Cancel
+                            </button>
+                          )}
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
                 </div>
               )}
             </>

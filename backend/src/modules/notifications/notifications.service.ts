@@ -382,7 +382,7 @@ export class NotificationsService {
   }
 
   // Helper to validate quiet hours format
-  static validateQuietHours(quietHours: QuietHoursDto): boolean {
+  static validateQuietHours(quietHours?: QuietHoursDto | null): boolean {
     if (!quietHours) return true;
     if (!quietHours.start || !quietHours.end) return false;
     const timeRegex = /^([01]?[0-9]|2[0-3]):[0-5][0-9]$/;

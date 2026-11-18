@@ -10,6 +10,7 @@ import { WhatsAppWebhookController } from './controllers/whatsapp-webhook.contro
 import { AuthService } from './services/auth.service.js';
 import { OtpService } from './services/otp.service.js';
 import { WhatsAppService } from './services/whatsapp.service.js';
+import { SmsOtpService } from './services/sms-otp.service.js';
 import { JwtTokenService } from './services/jwt.service.js';
 import { UserRepository } from './repositories/user.repository.js';
 import { JwtStrategy } from './strategies/jwt.strategy.js';
@@ -34,6 +35,7 @@ import { getJwtSecret } from './utils/jwt-config.js';
     AuthService,
     OtpService,
     WhatsAppService,
+    SmsOtpService,
     JwtTokenService,
     UserRepository,
     JwtStrategy,

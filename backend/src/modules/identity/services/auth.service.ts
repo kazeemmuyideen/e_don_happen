@@ -36,8 +36,15 @@ export class AuthService {
     const phone = normalizePhone(sendOtpDto.phone);
     const existingUser = await this.userRepository.findByPhone(phone);
 
-    if (existingUser && existingUser.accountStatus === AccountStatus.BANNED) {
-      throw new UnauthorizedException('Account is banned');
+    if (
+      existingUser &&
+      [
+        AccountStatus.BANNED,
+        AccountStatus.SUSPENDED,
+        AccountStatus.DEACTIVATED,
+      ].includes(existingUser.accountStatus)
+    ) {
+      throw new UnauthorizedException('Account is inactive');
     }
 
     return this.otpService.sendOtp(phone);
@@ -145,21 +152,23 @@ export class AuthService {
   async refreshToken(
     refreshTokenDto: RefreshTokenDto,
   ): Promise<{ accessToken: string }> {
+    let userId: string;
     try {
       const payload = this.jwtTokenService.verifyRefreshToken(
         refreshTokenDto.refreshToken,
       );
-      const user = await this.userRepository.findById(payload.sub);
-
-      if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
-        throw new UnauthorizedException('Invalid refresh token');
-      }
-
-      const accessToken = this.jwtTokenService.generateAccessToken(user);
-      return { accessToken };
+      userId = payload.sub;
     } catch {
       throw new UnauthorizedException('Invalid refresh token');
     }
+
+    const user = await this.userRepository.findById(userId);
+    if (!user || user.accountStatus !== AccountStatus.ACTIVE) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const accessToken = this.jwtTokenService.generateAccessToken(user);
+    return { accessToken };
   }
 
   async getProfile(userId: string) {

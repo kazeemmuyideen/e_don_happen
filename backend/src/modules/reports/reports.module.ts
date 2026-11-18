@@ -10,6 +10,7 @@ import { ReportsController } from './controllers/reports.controller.js';
 import { EvidenceController } from './controllers/evidence.controller.js';
 import { ReportsService } from './services/reports.service.js';
 import { EvidenceService } from './services/evidence.service.js';
+import { EvidenceScannerService } from './services/evidence-scanner.service.js';
 import { Report } from './entities/report.entity.js';
 import { EvidenceAsset } from './entities/evidence-asset.entity.js';
 
@@ -21,7 +22,12 @@ import { EvidenceAsset } from './entities/evidence-asset.entity.js';
     TypeOrmModule.forFeature([Report, EvidenceAsset, User, Confirmation]),
   ],
   controllers: [ReportsController, EvidenceController],
-  providers: [ReportsService, ReportsRepository, EvidenceService],
-  exports: [ReportsService],
+  providers: [
+    ReportsService,
+    ReportsRepository,
+    EvidenceService,
+    EvidenceScannerService,
+  ],
+  exports: [ReportsService, EvidenceScannerService],
 })
 export class ReportsModule {}

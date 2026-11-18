@@ -44,6 +44,6 @@ import appConfig from './config/app.config.js';
 })
 export class AppModule implements NestModule {
   configure(consumer: MiddlewareConsumer) {
-    consumer.apply(RateLimitMiddleware).forRoutes('*');
+    consumer.apply(RateLimitMiddleware).forRoutes('{*splat}');
   }
 }

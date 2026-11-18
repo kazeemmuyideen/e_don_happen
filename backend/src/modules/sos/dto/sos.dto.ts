@@ -10,6 +10,9 @@ import {
   Min,
 } from 'class-validator';
 import { ApiProperty, ApiPropertyOptional } from '@nestjs/swagger';
+import { Type } from 'class-transformer';
+import { ValidateNested } from 'class-validator';
+import { EscalationPolicyDto } from './escalation-policy.dto.js';
 
 export enum SosState {
   ACTIVE = 'active',
@@ -39,15 +42,21 @@ export class CreateSosDto {
   @Max(180)
   longitude: number;
 
-  @ApiPropertyOptional({ description: 'Who may see the live location snapshot' })
+  @ApiPropertyOptional({
+    description: 'Who may see the live location snapshot',
+  })
   @IsOptional()
   @IsObject()
   sharingPolicy?: Record<string, any>;
 
-  @ApiPropertyOptional({ description: 'How the request escalates' })
+  @ApiPropertyOptional({
+    type: EscalationPolicyDto,
+    description: 'How the request escalates',
+  })
   @IsOptional()
-  @IsObject()
-  escalationPolicy?: Record<string, any>;
+  @ValidateNested()
+  @Type(() => EscalationPolicyDto)
+  escalationPolicy?: EscalationPolicyDto;
 
   @ApiPropertyOptional({ maxLength: 500 })
   @IsOptional()

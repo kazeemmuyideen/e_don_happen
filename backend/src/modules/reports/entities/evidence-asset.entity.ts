@@ -31,6 +31,23 @@ export class EvidenceAsset {
   @Column({ type: 'timestamptz', name: 'retention_deadline', nullable: true })
   retentionDeadline: Date;
 
+  @Column({
+    type: 'varchar',
+    length: 20,
+    name: 'scan_state',
+    default: 'clean',
+  })
+  scanState: string;
+
+  @Column({ type: 'varchar', length: 50, name: 'scan_engine', nullable: true })
+  scanEngine: string;
+
+  @Column({ type: 'timestamptz', name: 'scanned_at', nullable: true })
+  scannedAt: Date;
+
+  @Column({ type: 'text', name: 'scan_signature', nullable: true })
+  scanSignature: string;
+
   @ManyToOne('Report')
   @JoinColumn({ name: 'report_id' })
   report: any;

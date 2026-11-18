@@ -1,18 +1,26 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
+import { ConfigService } from '@nestjs/config';
 import { ForbiddenException } from '@nestjs/common';
 import { BillingService } from './billing.service.js';
 import { Subscription } from './entities/subscription.entity.js';
+import { PaymentAttempt } from './entities/payment-attempt.entity.js';
+import { PaymentEvent } from './entities/payment-event.entity.js';
 import { Community } from '../community/entities/community.entity.js';
 import { User } from '../identity/entities/user.entity.js';
 import { UserRole } from '../identity/interfaces/identity.interface.js';
-
+import { PaymentGatewayService } from './services/payment-gateway.service.js';
 import { AuditService } from '../audit/audit.service.js';
+
 describe('BillingService', () => {
   let service: BillingService;
   let subscriptionRepo: any;
+  let paymentAttemptRepo: any;
+  let paymentEventRepo: any;
   let communityRepo: any;
   let userRepo: any;
+  let paymentGateway: any;
+  let audit: any;
 
   const makeSubscription = () => ({
     id: 'sub-1',
@@ -25,12 +33,38 @@ describe('BillingService', () => {
     organisationOrCommunity: { name: 'Yaba' },
   });
 
+  const makeAttempt = () => ({
+    id: 'attempt-1',
+    reference: 'ns-1',
+    communityId: 'community-1',
+    plan: 'premium',
+    amount: 1_500_000,
+    currency: 'NGN',
+    status: 'initialized',
+    authorizationUrl: 'https://pay.local/ns-1',
+    subscriptionId: null,
+    providerResponse: null,
+    completedAt: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  });
+
   beforeEach(async () => {
     subscriptionRepo = {
       create: vi.fn((value) => ({ ...value })),
       save: vi.fn(async (value) => ({ ...value, id: 'sub-1' })),
       findOne: vi.fn().mockImplementation(async () => makeSubscription()),
       find: vi.fn().mockImplementation(async () => [makeSubscription()]),
+    };
+    paymentAttemptRepo = {
+      create: vi.fn((value) => ({ ...value })),
+      save: vi.fn(async (value) => ({ ...value, id: 'attempt-1' })),
+      findOne: vi.fn().mockImplementation(async () => makeAttempt()),
+    };
+    paymentEventRepo = {
+      create: vi.fn((value) => ({ ...value })),
+      save: vi.fn(async (value) => ({ ...value, id: 'event-1' })),
+      findOne: vi.fn().mockResolvedValue(null),
     };
     communityRepo = {
       findOne: vi.fn().mockResolvedValue({
@@ -45,6 +79,26 @@ describe('BillingService', () => {
         role: UserRole.RESIDENT,
       }),
     };
+    paymentGateway = {
+      provider: 'demo',
+      isConfigured: vi.fn().mockReturnValue(true),
+      initialize: vi.fn(async (input: any) => ({
+        authorizationUrl: `https://pay.local/${input.reference}`,
+        reference: input.reference,
+      })),
+      verify: vi.fn(async (reference: string) => ({
+        status: 'success',
+        reference,
+        paidAt: new Date(),
+      })),
+      verifyWebhook: vi.fn().mockReturnValue({
+        id: 'evt-1',
+        event: 'charge.success',
+        reference: 'ns-1',
+        status: 'success',
+      }),
+    };
+    audit = { record: vi.fn() };
 
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -53,9 +107,24 @@ describe('BillingService', () => {
           provide: getRepositoryToken(Subscription),
           useValue: subscriptionRepo,
         },
+        {
+          provide: getRepositoryToken(PaymentAttempt),
+          useValue: paymentAttemptRepo,
+        },
+        {
+          provide: getRepositoryToken(PaymentEvent),
+          useValue: paymentEventRepo,
+        },
         { provide: getRepositoryToken(Community), useValue: communityRepo },
         { provide: getRepositoryToken(User), useValue: userRepo },
-        { provide: AuditService, useValue: { record: vi.fn() } },
+        { provide: PaymentGatewayService, useValue: paymentGateway },
+        { provide: AuditService, useValue: audit },
+        {
+          provide: ConfigService,
+          useValue: new ConfigService({
+            payments: { provider: 'demo', currency: 'NGN' },
+          }),
+        },
       ],
     }).compile();
 
@@ -102,5 +171,62 @@ describe('BillingService', () => {
 
     expect(result).toHaveLength(1);
     expect(result[0].communityName).toBe('Yaba');
+  });
+
+  it('initializes a payment with a server-side amount', async () => {
+    const result = await service.initializePayment('admin-1', {
+      communityId: 'community-1',
+      plan: 'premium',
+    });
+
+    expect(paymentGateway.initialize).toHaveBeenCalledWith(
+      expect.objectContaining({
+        amount: 1_500_000,
+        currency: 'NGN',
+      }),
+    );
+    expect(paymentAttemptRepo.save).toHaveBeenCalledTimes(2);
+    expect(result.status).toBe('initialized');
+    expect(result.authorizationUrl).toBe(`https://pay.local/${result.reference}`);
+  });
+
+  it('settles a verified payment and activates the subscription', async () => {
+    subscriptionRepo.findOne.mockResolvedValueOnce(null);
+
+    const result = await service.verifyPayment('admin-1', {
+      reference: 'ns-1',
+    });
+
+    expect(paymentGateway.verify).toHaveBeenCalledWith('ns-1');
+    expect(subscriptionRepo.save).toHaveBeenCalledWith(
+      expect.objectContaining({
+        status: 'active',
+        billingReference: 'ns-1',
+      }),
+    );
+    expect(result.status).toBe('succeeded');
+    expect(result.subscriptionId).toBe('sub-1');
+    expect(audit.record).toHaveBeenCalledWith(
+      expect.objectContaining({ action: 'billing.payment_verified' }),
+    );
+  });
+
+  it('records payment webhooks once', async () => {
+    paymentEventRepo.findOne
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({ id: 'event-1' });
+
+    const first = await service.handlePaymentWebhook(
+      Buffer.from('{"event":"charge.success"}'),
+      'signature',
+    );
+    const second = await service.handlePaymentWebhook(
+      Buffer.from('{"event":"charge.success"}'),
+      'signature',
+    );
+
+    expect(first).toEqual({ received: true, duplicate: false });
+    expect(second).toEqual({ received: true, duplicate: true });
+    expect(paymentEventRepo.save).toHaveBeenCalledTimes(1);
   });
 });

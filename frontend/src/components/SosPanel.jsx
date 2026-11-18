@@ -7,6 +7,11 @@ const field =
 const panel = 'rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6';
 const TYPES = ['medical', 'fire', 'security', 'utilities', 'other'];
 const OPEN = ['active', 'acknowledged'];
+const CHANNEL_OPTIONS = {
+  in_app: ['in_app'],
+  sms: ['sms'],
+  both: ['in_app', 'sms'],
+};
 
 function when(value) {
   return new Date(value).toLocaleString('en-NG', {
@@ -29,6 +34,9 @@ export default function SosPanel({ area, profile, focusSosId }) {
   const [message, setMessage] = useState('');
   const [locationLabel, setLocationLabel] = useState('');
   const [place, setPlace] = useState(area);
+  const [escalationEnabled, setEscalationEnabled] = useState(false);
+  const [maxLevels, setMaxLevels] = useState('2');
+  const [channels, setChannels] = useState('in_app');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
@@ -94,6 +102,14 @@ export default function SosPanel({ area, profile, focusSosId }) {
           ...(message.trim() ? { message: message.trim() } : {}),
           ...(locationLabel.trim()
             ? { locationLabel: locationLabel.trim() }
+            : {}),
+          ...(escalationEnabled
+            ? {
+                escalationPolicy: {
+                  maxLevels: Number(maxLevels),
+                  channels: CHANNEL_OPTIONS[channels],
+                },
+              }
             : {}),
         },
       });
@@ -192,6 +208,49 @@ export default function SosPanel({ area, profile, focusSosId }) {
             placeholder="For example: Someone collapsed near the market gate."
           />
         </label>
+        <fieldset className="rounded-2xl border border-ink/10 p-3">
+          <legend className="px-1 text-sm font-bold">
+            Escalation policy (optional)
+          </legend>
+          <label className="flex items-center gap-2 text-sm">
+            <input
+              type="checkbox"
+              checked={escalationEnabled}
+              onChange={(e) => setEscalationEnabled(e.target.checked)}
+            />
+            Escalate if responders do not acknowledge
+          </label>
+          {escalationEnabled && (
+            <div className="mt-3 grid gap-3 sm:grid-cols-2">
+              <label className="block text-sm font-bold">
+                Maximum levels
+                <select
+                  className={`${field} mt-2`}
+                  value={maxLevels}
+                  onChange={(e) => setMaxLevels(e.target.value)}
+                >
+                  {[1, 2, 3, 4, 5].map((level) => (
+                    <option key={level} value={level}>
+                      {level}
+                    </option>
+                  ))}
+                </select>
+              </label>
+              <label className="block text-sm font-bold">
+                Channels
+                <select
+                  className={`${field} mt-2`}
+                  value={channels}
+                  onChange={(e) => setChannels(e.target.value)}
+                >
+                  <option value="in_app">In-app</option>
+                  <option value="sms">SMS</option>
+                  <option value="both">In-app and SMS</option>
+                </select>
+              </label>
+            </div>
+          )}
+        </fieldset>
         <button
           className="btn-primary bg-red-600 hover:bg-red-700"
           disabled={busy}

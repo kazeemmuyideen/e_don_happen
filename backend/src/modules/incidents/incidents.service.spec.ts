@@ -88,7 +88,7 @@ describe('IncidentsService', () => {
     });
 
     const linkSaves = manager.save.mock.calls.filter(
-      ([entity]) => entity === IncidentReportLink,
+      ([entity]: [unknown]) => entity === IncidentReportLink,
     );
     expect(linkSaves).toHaveLength(1);
     expect(linkSaves[0][1]).toHaveLength(2);

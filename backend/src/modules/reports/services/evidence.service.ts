@@ -20,8 +20,10 @@ import {
   PutObjectCommand,
   S3Client,
 } from '@aws-sdk/client-s3';
+import { AuditService } from '../../audit/audit.service.js';
 import { EvidenceAsset } from '../entities/evidence-asset.entity.js';
 import { Report } from '../entities/report.entity.js';
+import { EvidenceScannerService } from './evidence-scanner.service.js';
 import { User } from '../../identity/entities/user.entity.js';
 import { UserRole } from '../../identity/interfaces/identity.interface.js';
 import {
@@ -51,6 +53,8 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
     @InjectRepository(User)
     private readonly userRepo: Repository<User>,
     private readonly config: ConfigService,
+    private readonly scanner: EvidenceScannerService,
+    private readonly audit: AuditService,
   ) {}
 
   async upload(userId: string, reportId: string, dto: UploadEvidenceDto) {
@@ -98,8 +102,12 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
         'Evidence must be a PNG, JPEG or WebP image',
       );
 
+    const safeName = this.safeFileName(fileName);
+    const scan = await this.scanner.scan(buffer, safeName);
+    const available = scan.state === 'clean';
+
     const storageKey = `${reportId}/${randomUUID()}.${EXTENSIONS[mimeType]}`;
-    await this.writeObject(storageKey, buffer, mimeType);
+    if (available) await this.writeObject(storageKey, buffer, mimeType);
 
     const retentionDeadline = new Date();
     retentionDeadline.setDate(
@@ -110,14 +118,37 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
         reportId,
         storageKey,
         mediaMetadata: {
-          fileName: this.safeFileName(fileName),
+          fileName: safeName,
           mimeType,
           sizeBytes: buffer.length,
         },
         moderationState: 'pending',
         retentionDeadline,
+        scanState: scan.state,
+        scanEngine: scan.engine,
+        scannedAt: scan.scannedAt,
+        scanSignature: scan.signature,
       }),
     );
+    if (!available) {
+      const detail = scan.signature ? ` (${scan.signature})` : '';
+      this.logger.warn(
+        `Evidence scan ${scan.state} by ${scan.engine}${detail} for asset ${asset.id}`,
+      );
+      await this.audit.record({
+        actorId: userId,
+        action: `evidence.scan.${scan.state}`,
+        targetId: asset.id,
+        source: 'scanner',
+        metadata: {
+          reportId,
+          fileName: safeName,
+          engine: scan.engine,
+          scannedAt: scan.scannedAt,
+          ...(scan.signature ? { signature: scan.signature } : {}),
+        },
+      });
+    }
     return this.present(asset);
   }
 
@@ -151,8 +182,8 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
     await this.findReport(reportId);
     const user = await this.findUser(userId);
     const report = await this.reportRepo.findOneBy({ id: reportId });
-    const canSeePending =
-      report?.reporterId === userId || this.isModerator(user);
+    const privileged = this.isModerator(user);
+    const canSeePending = report?.reporterId === userId || privileged;
     const assets = await this.evidenceRepo.find({
       where: { reportId },
       order: { id: 'ASC' },
@@ -160,7 +191,8 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
     return assets
       .filter(
         (asset) =>
-          asset.moderationState === 'approved' || canSeePending,
+          (asset.moderationState === 'approved' || canSeePending) &&
+          (this.isAvailable(asset) || privileged),
       )
       .map((asset) => this.present(asset));
   }
@@ -192,6 +224,10 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
     const user = await this.findUser(userId);
     const asset = await this.evidenceRepo.findOneBy({ id: evidenceId });
     if (!asset) throw new NotFoundException('Evidence not found');
+    if (!this.isAvailable(asset))
+      throw new ForbiddenException(
+        'Evidence failed security scanning and is not available',
+      );
     const report = await this.findReport(asset.reportId);
     const canSeePending =
       report.reporterId === userId || this.isModerator(user);
@@ -358,6 +394,10 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
     );
   }
 
+  private isAvailable(asset: EvidenceAsset) {
+    return asset.scanState !== 'infected' && asset.scanState !== 'error';
+  }
+
   private get storageDir() {
     return this.config.get<string>('evidence.storageDir') ?? '.local/evidence';
   }
@@ -410,6 +450,10 @@ export class EvidenceService implements OnModuleInit, OnApplicationShutdown {
       sizeBytes: asset.mediaMetadata?.sizeBytes,
       moderationState: asset.moderationState,
       retentionDeadline: asset.retentionDeadline,
+      scanState: asset.scanState ?? 'clean',
+      scanEngine: asset.scanEngine ?? null,
+      scannedAt: asset.scannedAt ?? null,
+      scanSignature: asset.scanSignature ?? null,
     };
   }
 }

@@ -2,7 +2,7 @@
 
 ## Scope and navigation
 
-This is an implementation reference for E don happen / Neighbourhood Signal at commit [`09db39d`](https://github.com/johdanike/group_9b/tree/09db39de1b8b761a369135badbb0802e9f730f99), on `demo/pitch-integration`. It describes implemented behavior and limitations, not all aspirations in the original product plan. A documentation-only merge does not install that implementation onto another branch. Source links below are pinned so they remain meaningful when this guide is merged independently. Reconcile this guide with code whenever the implementation changes.
+This is an implementation reference for E don happen / Neighbourhood Signal in the current working tree. Behavior and configuration sections below describe the current code, including uncommitted changes; the pinned source links in the appendix are [historical snapshots from `09db39d`](https://github.com/johdanike/group_9b/tree/09db39de1b8b761a369135badbb0802e9f730f99) on `demo/pitch-integration` and are not authoritative for current behavior. It describes implemented behavior and limitations, not all aspirations in the original product plan. A documentation-only merge does not install that implementation onto another branch. Reconcile this guide with code whenever the implementation changes.
 
 - [Setup and commands](#setup-and-commands)
 - [Architecture and concepts](#architecture-and-concepts)
@@ -21,7 +21,7 @@ This is an implementation reference for E don happen / Neighbourhood Signal at c
 
 ## Setup and commands
 
-Prerequisites: Node.js 24, npm 11, Git, Docker Desktop running Linux containers. Use the integrated branch identified above. From the root, run `npm ci`; copy `backend/.env.example` to `backend/.env`; run `npm run db:up`, `npm run build`, `npm run demo:seed`, then `npm run dev`. Preserve existing environment files. Windows users may need `npm.cmd` instead of `npm`.
+Prerequisites: Node.js 24, npm 11, Git, Docker Desktop running Linux containers. Work from the current working tree. From the root, run `npm ci`; copy `backend/.env.example` to `backend/.env`; run `npm run db:up`, `npm run build`, `npm run demo:seed`, then `npm run dev`. Preserve existing environment files. Windows users may need `npm.cmd` instead of `npm`.
 
 The npm root is a private workspace containing `backend` and `frontend`, with a shared lockfile. Install from the root so workspace scripts and hoisted CLI paths resolve consistently. Backend ESM imports use `.js` extensions in TypeScript because emitted code runs as Node ESM. Nest dependency injection builds services from module providers and injects TypeORM repositories; importing a TypeScript class alone does not register a provider.
 
@@ -37,7 +37,7 @@ The npm root is a private workspace containing `backend` and `frontend`, with a 
 | `demo:serve` | Serves compiled frontend with same-origin API proxy; does not start backend |
 | `demo:share` | Starts cloudflared after checking the local static server is reachable |
 
-Additional backend scripts: `start`, `start:dev`, `start:debug`, and `start:prod` run Nest/compiled server; `format` writes Prettier formatting; `lint` runs type-aware Oxlint; `test:watch`, `test:cov`, `test:debug` offer Vitest modes; `test:e2e` delegates to root. Prefer root `db:*` scripts over legacy backend `docker-compose` commands. Frontend `dev` binds all interfaces; `preview` binds loopback and is for inspecting builds, not a production hosting configuration.
+Additional backend scripts: `start`, `start:dev`, `start:debug`, and `start:prod` run Nest/compiled server; `format` writes Prettier formatting; `lint` runs type-aware Oxlint; `test:watch`, `test:cov`, `test:debug` offer Vitest modes; `test:e2e` delegates to root. `typeorm`, `migration:generate`, `migration:run`, `migration:revert`, and `migration:show` manage schema through `backend/src/config/typeorm.datasource.ts`. Prefer root `db:*` scripts over legacy backend `docker-compose` commands. Frontend `dev` binds all interfaces; `preview` binds loopback and is for inspecting builds, not a production hosting configuration.
 
 Docker uses postgis/postgis:15-3.4 and redis:7-alpine. Host bindings are loopback 55432->5432 and 56379->6379, avoiding unrelated local databases. Database name is neighbourhood_signal_demo and local credentials are postgres/postgres. Named volumes postgres_data and redis_data are project-scoped. Initialization SQL runs only on a fresh database volume. Ordinary shutdown retains state; deleting volumes destroys local data.
 
@@ -53,7 +53,7 @@ flowchart LR
   Proxy --> API[Nest API on loopback 3000]
   API --> PG[(PostgreSQL + PostGIS)]
   API --> Redis[(Redis connection)]
-  API --> Mailbox[Private demo OTP JSON]
+   API --> Mailbox[Private demo OTP JSON (console only)]
   PG --> Worker[Web Push polling worker]
   Worker --> Provider[Browser push service]
   Provider --> SW[Browser service worker]
@@ -61,7 +61,7 @@ flowchart LR
 
 The normal request path is page event -> API helper -> controller -> guard/DTO validation -> service -> repository/transaction -> public response -> React state. Controllers define HTTP boundaries. DTO decorators validate incoming data. Services enforce ownership, business rules, transactions, and projections. Entities map stored fields and relationships. Guards authenticate and authorize requests. Module metadata wires these dependencies together.
 
-The root application loads configuration, TypeORM, Redis, and domain modules. Identity, reports, notifications, moderation, incidents, community, SOS, billing, analytics, postcodes, and evidence have working HTTP workflows; the React client currently exercises identity, reports, postcodes, and the report feed. A schema declaration does not imply a UI. Redis connects and closes through its infrastructure service; OTP state and Web Push queue execution currently do not use Redis.
+The root application loads configuration, TypeORM, Redis, audit, rate limiting, and domain modules. Identity, reports, notifications, moderation, incidents, community, SOS, billing/payments, analytics, postcodes, and evidence have working HTTP workflows; the React client exercises identity, reports, postcodes, community billing, SOS, evidence, and the report feed. A schema declaration does not imply a UI. Redis holds OTP records, per-phone OTP request counters, and global/auth rate-limit buckets; Web Push queue execution still uses database rows and timers.
 
 PostGIS stores longitude/latitude in SRID 4326. GeoJSON coordinate order is [longitude, latitude], while many UI interfaces display latitude first. Geographic distance uses ST_DWithin with geography casts so distances are metres. A transaction commits related writes together; pessimistic row locks serialize competing report votes. These mechanisms protect consistency but do not replace abuse prevention or prove an observation true.
 
@@ -69,63 +69,77 @@ Report confidence (community votes), moderator verification (review decision), c
 
 ## Configuration
 
-Normal workspace execution uses backend as the API working directory. Config loads `.env.local` then `.env`; existing process environment takes precedence. Root integration tests explicitly load backend/.env. Never expose environment files, OTP mailbox contents, or VAPID private keys through static hosting.
+Normal workspace execution uses backend as the API working directory. Config loads `.env.local` then `.env`; existing process environment takes precedence. Root integration tests explicitly load backend/.env. When `NODE_ENV=production`, `validateProductionEnvironment()` runs before Nest is created, collects configuration errors, and aborts startup rather than falling back to demo defaults. Never expose environment files, OTP mailbox contents, or VAPID private keys through static hosting.
 
 | Variable | Default or example | Meaning |
 | --- | --- | --- |
-| NODE_ENV | development in example | Production disables demo OTP, key generation, and schema synchronization |
-| PORT | 3000 | API port; API binds 127.0.0.1 |
+| NODE_ENV | development in example | Production enables startup validation, disables demo OTP/schema sync, and disables Swagger unless `SWAGGER_ENABLED=true` |
+| PORT / BIND_HOST | 3000 / 127.0.0.1 | API port and bind address; change the loopback default deliberately when using an ingress proxy |
 | DB_HOST | localhost; example 127.0.0.1 | PostgreSQL host |
 | DB_PORT | 55432 | Host PostgreSQL port |
-| DB_USERNAME / DB_PASSWORD | postgres / postgres locally | Development credentials only |
+| DB_USERNAME / DB_PASSWORD | postgres / postgres locally | Development credentials only; production requires a non-placeholder username and a password of at least 12 characters |
 | DB_NAME | neighbourhood_signal_demo | Seed requires this exact name |
 | DB_LOGGING | false unless true | Enable TypeORM SQL logging |
-| REDIS_HOST / REDIS_PORT | localhost / 56379 | Redis connection |
-| JWT_SECRET | unsafe development fallback | Configure a strong access-token signing secret |
-| JWT_REFRESH_SECRET | separate unsafe fallback | Configure a different refresh-token signing secret |
-| JWT_ACCESS_EXPIRY | 15m in code; 2h in example | Access lifetime |
-| JWT_REFRESH_EXPIRY | 7d | Refresh lifetime |
-| DEMO_MODE | false unless true | Demo-only OTP and schema synchronization gates |
-| CORS_ORIGIN | example http://127.0.0.1:5173 | Configured browser origin; not an authorization boundary |
+| REDIS_HOST / REDIS_PORT | localhost / 56379 | Redis connection; Redis backs OTP state and rate-limit buckets |
+| JWT_SECRET / JWT_REFRESH_SECRET | unsafe development fallbacks | Strong, distinct secrets of at least 32 characters required in production |
+| JWT_ACCESS_EXPIRY / JWT_REFRESH_EXPIRY | 15m in code (2h in example) / 7d | Access and refresh lifetimes |
+| DEMO_MODE | false unless true | Development-only console OTP and schema synchronization gate; rejected in production |
+| CORS_ORIGIN | example http://127.0.0.1:5173 | Explicit allowed browser origin; production requires a specific HTTPS origin, not `*` |
+| TRUST_PROXY | false | `false`, `true` (one hop), or a positive integer hop count; production requires a positive count |
+| RATE_LIMIT_WINDOW_SECONDS / RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX | 60 / 300 / 20 | Redis-backed per-client-IP window; send-otp/verify-otp/refresh use the tighter auth bucket; health and webhook paths are exempt |
+| JSON_BODY_LIMIT | 8mb | JSON/urlencoded body limit; raw body is retained for webhook signature checks |
+| SWAGGER_ENABLED | false | Expose `/api/docs` in production only when explicitly true |
 | DEMO_OTP_FILE | .local/demo-otps.json | Private console-driver mailbox, relative to backend working directory |
-| WHATSAPP_DRIVER | console unless set | `console` is local demo only; production must use `whatsapp` |
-| WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID | absent | Meta WhatsApp Cloud API credentials |
+| OTP_DELIVERY_DRIVER / WHATSAPP_DRIVER | unset locally; console demo default | OTP channel (`whatsapp`, `sms`, or demo-only `console`); `OTP_DELIVERY_DRIVER` overrides `WHATSAPP_DRIVER` |
+| WHATSAPP_ACCESS_TOKEN / WHATSAPP_PHONE_NUMBER_ID | absent locally | Meta WhatsApp Cloud API credentials; required in production with the WhatsApp driver |
 | WHATSAPP_TEMPLATE_NAME / WHATSAPP_TEMPLATE_LANGUAGE | otp_verification / en_US | Approved authentication template and language |
-| WHATSAPP_OTP_SECRET | demo fallback only | HMAC secret for stored OTP hashes; required for WhatsApp driver |
-| WHATSAPP_VERIFY_TOKEN / WHATSAPP_APP_SECRET | absent | Webhook challenge token and `X-Hub-Signature-256` secret |
+| WHATSAPP_OTP_SECRET | demo fallback only | HMAC secret for stored OTP hashes; at least 32 non-placeholder characters in production |
+| WHATSAPP_VERIFY_TOKEN / WHATSAPP_APP_SECRET | absent locally | Webhook challenge token and `X-Hub-Signature-256` secret; both required in production with the WhatsApp driver |
+| SMS_API_URL / SMS_API_KEY / SMS_SENDER_ID | absent | Required in production with `OTP_DELIVERY_DRIVER=sms`; the SMS driver posts JSON to the configured URL |
 | WHATSAPP_OTP_TTL_SECONDS / WHATSAPP_OTP_MAX_ATTEMPTS | 300 / 3 | Code lifetime and failed-attempt limit |
 | WHATSAPP_OTP_RATE_LIMIT / WHATSAPP_OTP_RATE_WINDOW_SECONDS | 3 / 900 | Per-phone request limit and window |
+| NIPOST_API_KEY / NIPOST_BASE_URL / NIPOST_LOOKUP_LEVEL | empty / https://api.postcode.gov.ng / 1 | Postcode lookup for report enrichment; empty key leaves format-only validation |
 | WEB_PUSH_PUBLIC_KEY / WEB_PUSH_PRIVATE_KEY | absent | VAPID pair required outside demo auto-generation |
-| WEB_PUSH_SUBJECT | example mailto:demo@example.com | Push application contact identifier |
+| WEB_PUSH_SUBJECT | example mailto:demo@example.com | Push application contact identifier; placeholders are rejected in production |
 | DEMO_PUSH_KEYS_FILE | .local/web-push-keys.json | Persistent private development VAPID pair |
 | WEB_PUSH_WORKER | enabled unless false | Disable worker polling when explicitly false |
+| PAYMENT_PROVIDER / PAYMENT_BASE_URL | demo / https://api.paystack.co | `demo` auto-succeeds locally; production requires `paystack` |
+| PAYMENT_SECRET_KEY / PAYMENT_PUBLIC_KEY / PAYMENT_WEBHOOK_SECRET | absent locally | Required in production; webhook secret verifies the raw-body HMAC |
+| PAYMENT_CALLBACK_URL / PAYMENT_CURRENCY | empty / NGN | Callback must be a specific HTTPS URL in production; currency sent to the provider |
+| DISPATCH_DRIVER / DISPATCH_API_URL / DISPATCH_API_KEY / DISPATCH_SENDER_ID | off / empty | `off` or `sms`; SMS credentials are required in production when enabled |
+| SOS_ESCALATION_ENABLED / SOS_ESCALATION_POLL_MS / SOS_ESCALATION_MAX_LEVELS | false / 60000 / 2 | In-app escalation worker switch, poll interval, and server-side level cap |
+| EVIDENCE_STORAGE_DIR / EVIDENCE_MAX_BYTES | .local/evidence / 5242880 | Local evidence storage directory and upload limit |
+| EVIDENCE_DRIVER / S3_BUCKET / S3_REGION / S3_ENDPOINT | local / empty / us-east-1 / empty | `local` or `s3`; S3 bucket and region are required in production with `s3` |
+| S3_ACCESS_KEY_ID / S3_SECRET_ACCESS_KEY / S3_FORCE_PATH_STYLE | empty / empty / false | Optional S3 credentials and path-style setting |
+| EVIDENCE_SCANNER_DRIVER / EVIDENCE_SCANNER_HOST / EVIDENCE_SCANNER_PORT / EVIDENCE_SCANNER_TIMEOUT_MS | passthrough / 127.0.0.1 / 3310 / 10000 | `passthrough` locally; production requires `clamav` and a scanner host |
+| EVIDENCE_RETENTION_DAYS / EVIDENCE_RETENTION_ENABLED / EVIDENCE_RETENTION_INTERVAL_MS | 90 / true / 86400000 | Expired evidence deletion window, switch, and interval |
 | SHARE_HOST / SHARE_PORT | 0.0.0.0 / 4173 | Built frontend/proxy bind address and port |
 | API_PORT | 3000 | Static proxy's loopback upstream |
 | CLOUDFLARED_PATH | local tools lookup or PATH | Optional tunnel executable |
 
-TypeORM synchronization runs only with DEMO_MODE=true and NODE_ENV other than production. Although a migration glob is configured, there are no implemented versioned migration files or migration CLI/data-source workflow. Disabling synchronization alone does not provision a production schema. `start:prod` runs `node dist/main.js`; set NODE_ENV explicitly through the deployment environment.
+TypeORM synchronization runs only with `DEMO_MODE=true` and `NODE_ENV` other than production. Versioned migrations live in `backend/src/migrations`; `1794978450583-InitialSchema.ts` installs `postgis`/`uuid-ossp` and creates all current tables. Use the backend `typeorm`/`migration:*` scripts with `backend/src/config/typeorm.datasource.ts`; CI verifies `migration:run` and `migration:show` against a fresh database. `start:prod` runs `node dist/main.js`; set `NODE_ENV` explicitly through the deployment environment.
 
 ## Identity and sessions
 
-The frontend requests an OTP; only the backend generates it using cryptographic randomness. OTP records live in Redis under `otp:code:<phone>` with a TTL, an HMAC-SHA256 code hash (keyed by `WHATSAPP_OTP_SECRET`) and an attempt count, so multiple backend instances share state. Request throttling uses `otp:rate:<phone>` in Redis. The API response never includes the code.
+The frontend requests an OTP; only the backend generates it using cryptographic randomness. OTP records live in Redis under `otp:code:<phone>` (with an in-process fallback when Redis is unavailable) with a TTL, an HMAC-SHA256 code hash keyed by `WHATSAPP_OTP_SECRET`, and an attempt count. Request throttling uses `otp:rate:<phone>` in Redis. The API response never includes the code.
 
-Production delivery uses the Meta WhatsApp Cloud API with an approved authentication template. Set `WHATSAPP_DRIVER=whatsapp`, `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANGUAGE` and `WHATSAPP_OTP_SECRET`. Missing credentials return 503; there is no SMS fallback. In non-production demo mode the default `console` driver writes the code atomically through a temporary JSON file and rename to `DEMO_OTP_FILE`; the console driver is rejected when `NODE_ENV=production`.
+OTP delivery is selected by `OTP_DELIVERY_DRIVER`, falling back to `WHATSAPP_DRIVER`: `whatsapp` uses the Meta Cloud API template with `WHATSAPP_ACCESS_TOKEN`, `WHATSAPP_PHONE_NUMBER_ID`, `WHATSAPP_TEMPLATE_NAME`, `WHATSAPP_TEMPLATE_LANGUAGE`, and `WHATSAPP_OTP_SECRET`; `sms` posts the code to `SMS_API_URL` with `SMS_API_KEY` and `SMS_SENDER_ID`; `console` is demo-only. Production startup requires the chosen provider's credentials and rejects console delivery; missing runtime credentials return 503. In non-production demo mode the default `console` driver writes the code atomically through a temporary JSON file and rename to `DEMO_OTP_FILE`.
 
-A code lasts five minutes, allows three failed attempts, and each phone can request three sends in fifteen minutes. Successful verification deletes the Redis record; expired records disappear through Redis TTL. The demo mailbox can retain an expired entry until the next write, but it cannot authenticate. There is no IP/device rate limiter yet.
+A code lasts five minutes, allows three failed attempts, and each phone can request three sends in fifteen minutes. Successful verification deletes the Redis record; expired records disappear through Redis TTL. The demo mailbox can retain an expired entry until the next write, but it cannot authenticate. A separate Redis limiter applies per-client-IP windows, with a tighter `auth` bucket for send-otp/verify-otp/refresh and a general `api` bucket; auth requests fail closed if the limiter is unavailable, and health/webhook paths are exempt.
 
-`GET /api/webhooks/whatsapp` verifies `hub.mode` and `hub.verify_token` against `WHATSAPP_VERIFY_TOKEN` and echoes the challenge. `POST /api/webhooks/whatsapp` verifies `X-Hub-Signature-256` with `WHATSAPP_APP_SECRET` and currently records only status/message counts; it does not yet process inbound commands. Both endpoints fail closed in production when secrets are absent. Meta requires a public HTTPS webhook, while the API itself binds to loopback and must sit behind a TLS-terminating proxy.
+`GET /api/webhooks/whatsapp` verifies `hub.mode` and `hub.verify_token` against `WHATSAPP_VERIFY_TOKEN` and echoes the challenge. `POST /api/webhooks/whatsapp` verifies `X-Hub-Signature-256` with `WHATSAPP_APP_SECRET` and currently records only status/message counts; it does not yet process inbound commands. Both endpoints fail closed in production when secrets are absent, and production startup requires both secrets with the WhatsApp driver. Meta requires a public HTTPS webhook, while the API itself binds to loopback and must sit behind a TLS-terminating proxy.
 
 Verification creates a resident when necessary, updates last login, activates pending accounts, and rejects banned, suspended, or deactivated accounts. Access and refresh JWTs use distinct secrets. JWTs are signed, not encrypted. Claims include user ID, phone, role, and community; request authentication reloads the user from the database and checks active status. Role decisions therefore use the current stored user, not just an old token claim.
 
 The API client stores tokens under `signal:session` in sessionStorage, sends Bearer authorization, shares one in-flight refresh promise across failed requests, retries once after refresh, and clears the session if refresh fails. There are no authentication cookies, refresh rotation/revocation, or server-side logout. Browser script access to storage makes XSS prevention important. Closing/replacing a browser session or opening an installed PWA may require signing in again.
 
-Frontend phone normalization converts an eleven-digit Nigerian number beginning with 0 to +234 and removes formatting. The backend does not guarantee equivalent canonical normalization for all clients, so a unique raw phone column is not complete protection against equivalent-number duplicates.
+Phone normalization is backend-canonical: `normalizePhone()` strips spaces, parentheses, dots and hyphens, converts an eleven-digit Nigerian number beginning with `0` to `+234...`, adds `+` to other bare numbers, and rejects invalid E.164 values. OTP send/verify and phone-based user lookups use it. Frontend cleanup mirrors this for display, but API callers are normalized by the backend.
 
-Profiles expose own phone, display name, role, status, areas, language, verified-report count, and trustedContributor. Profile updates accept supported pilot areas (maximum three), language, name, and privacy settings; they do not grant roles. Administrative assignment routes require super_admin; suspension/ban/reactivation require moderator or super_admin. Some inline TypeScript bodies lack class-validator DTO validation. The inherited moderation action-update fallback trusts privacySettings.isAdmin, while privacy settings are writable: this unfinished authorization path must be fixed before deployment.
+Profiles expose own phone, display name, role, status, areas, language, verified-report count, and trustedContributor. Profile updates accept supported pilot areas (maximum three), language, name, and validated boolean privacy settings; they do not grant roles. Administrative assignment routes require super_admin; suspension/ban/reactivation require moderator or super_admin, and their bodies use validated DTOs. Moderation action updates are limited to the original moderator or a super admin, with no `privacySettings.isAdmin` fallback.
 
 ## Reports and community confidence
 
-Categories are traffic, weather, fire, security, medical, utilities, community, event, and other. A report requires a description of 10-1500 characters and a location with valid longitude/latitude ranges. Optional observedAt must be ISO and cannot exceed now by over sixty seconds. Evidence reference fields accept up to ten references (1-500 characters each). Image evidence can be uploaded as base64 PNG/JPEG/WebP through `POST /api/reports/:id/evidence`, is stored under `EVIDENCE_STORAGE_DIR` (5 MB default limit), and stays pending until a moderator approves it. `GET /api/reports/:id/evidence` shows approved assets to everyone and pending assets to the reporter or a moderator; `GET /api/evidence/:id/file` streams the stored image. Persisted location precision is approximate; public coordinates are rounded to two decimals. Public reporter projections omit phone and private metadata.
+Categories are traffic, weather, fire, security, medical, utilities, community, event, and other. A report requires a description of 10-1500 characters and a location with valid longitude/latitude ranges. Optional observedAt must be ISO and cannot exceed now by over sixty seconds. Evidence reference fields accept up to ten references (1-500 characters each). PNG/JPEG/WebP image evidence can be uploaded as base64 through `POST /api/reports/:id/evidence` or as multipart through `POST /api/reports/:id/evidence/upload`, with a 5 MB default limit, and is scanned before storage (`passthrough` locally, `clamav` in production). Clean assets are written to `EVIDENCE_STORAGE_DIR` or S3 and stay pending until a moderator approves them; `infected`/`error` assets keep scan metadata but are not written to storage and are not downloadable. `GET /api/reports/:id/evidence` shows approved assets to everyone and pending assets to the reporter or moderator (moderators can also see quarantined assets); `GET /api/evidence/:id/file` streams clean stored images. Retention deletes assets past `EVIDENCE_RETENTION_DAYS` on an interval. Persisted location precision is approximate; public coordinates are rounded to two decimals. Public reporter projections omit phone and private metadata.
 
 Creation saves the report and matching inbox rows in a single database transaction. Read queries expose only unverified, corroborated, verified, disputed, and resolved states. Under-review, stale, and removed rows are excluded from the public feed. Filters include category, state, since, paired latitude/longitude, radius, limit, and offset. Defaults are limit 20, maximum 100; radius ranges from 100 to 100000 metres. A radius alone has no location centre; coordinates without radius do not apply a distance restriction. Results sort by newest submission. Zero coordinates are valid.
 
@@ -148,7 +162,7 @@ All moderation controller routes require a current moderator or super_admin. Act
 | resolved | removed |
 | removed | none |
 
-The queue returns up to 100 raw report rows in unverified/disputed/corroborated states, newest first. It does not scope results by community, and the supplied moderator/target filters are not implemented. Some advertised Swagger response shapes differ from this actual array. The main action DTO requires a 10-1000 character reason; several quick-action bodies are inline types and do not have equivalent runtime validation.
+The queue returns up to 100 raw report rows in under-review/unverified/disputed/corroborated states, newest first, with `limit`/`offset`. It does not scope results by community or assigned moderator; `targetType` is accepted but only `report` can return rows. Some advertised Swagger response shapes differ from this actual array. The main action DTO requires a 10-1000 character reason; quick actions use validated `QuickApproveDto`/`QuickReasonDto` bodies.
 
 Audit records are not immutable: `updateAction` permits the original moderator (or a super admin) to edit reason, appeal status, and metadata. Core moderation covers report approve/reject/flag/review, appeals (create, pending, review), report merge, per-moderator stats, and the audit trail. Only report targets are supported by the generic action endpoint; non-report target types return 501. Incidents now have their own create/update/verify/link API under `/api/incidents`. There is still no automatic stale/resolution scheduler.
 
@@ -164,11 +178,13 @@ All routes below require a bearer token unless noted.
 | Incidents | `GET /api/incidents`, `GET /api/incidents/:id` | authenticated |
 | | `POST /api/incidents`, `PUT /api/incidents/:id`, `PUT /api/incidents/:id/verification`, `POST /api/incidents/:id/reports`, `DELETE /api/incidents/:id/reports/:reportId` | moderator or super admin |
 | Billing | `POST /api/billing/subscriptions`, `GET /api/billing/subscriptions/community/:communityId`, `GET|PUT /api/billing/subscriptions/:id`, `PUT /api/billing/subscriptions/:id/cancel` | community admin for that community, moderator, or super admin |
+| | `POST /api/billing/payments/checkout`, `POST /api/billing/payments/verify`, `GET /api/billing/payments/:reference` | community admin for the attempt's community, moderator, or super admin |
+| Payment webhook | `POST /api/webhooks/payments` | public; HMAC signature verified from the raw body |
 | Analytics | `GET /api/analytics/reports|notifications|incidents|sos` | moderator or super admin |
 | | `GET /api/analytics/audit-logs` | super admin |
 | Health | `GET /api/health` | public; reports database connectivity and uptime |
 
-SOS creation snapshots a rounded point, finds active responders whose coverage area contains the point (or whose community boundary does), plus that community's admin, excludes the requester, and writes both `sos_recipients` and in-app `notification_deliveries` rows in one transaction. Community boundaries and responder coverage areas are validated as closed GeoJSON polygons. Billing records plan, status, renewal date (30 days), and an optional external reference; payment capture is not implemented. Analytics uses grouped counts and supports a 1-90 day window.
+SOS creation snapshots a rounded point, finds active responders whose coverage area contains the point (or whose community boundary does), plus that community's admin, excludes the requester, and writes both `sos_recipients` and in-app `notification_deliveries` rows in one transaction. With `DISPATCH_DRIVER=sms`, a best-effort emergency SMS is sent after commit only to selected recipients with a stored phone that pass the consent/location-permission checks; failures are audited and do not block in-app fan-out. `escalationPolicy` is validated on creation; `SOS_ESCALATION_ENABLED`, `SOS_ESCALATION_POLL_MS`, and `SOS_ESCALATION_MAX_LEVELS` bound the worker, which records `sos_escalation_events` and in-app notices for open, unacknowledged requests. The DTO accepts `channels` including `sms`, but the escalation worker currently emits in-app events only. Community boundaries and responder coverage areas are validated as closed GeoJSON polygons. Billing records plan, status, renewal date (30 days), and an optional external reference; checkout and verify create/settle `payment_attempts`, signed webhooks are deduplicated in `payment_events`, and success activates a subscription. Analytics uses grouped counts and supports a 1-90 day window.
 
 ## Monitoring and uptime
 
@@ -215,7 +231,7 @@ Point an external service (Better Stack, UptimeRobot, Pingdom, or a cloud uptime
 
 ## Subscriptions, inbox, and push
 
-A subscription uses a composite user/category key and stores a centre, radius in kilometres (0.1-100), priority, and optional quiet hours. Default centre is approximately Lagos (6.5244, 3.3792). The UI uses selected pilot-area centres and typically five kilometres. Category preference changes are scoped to the authenticated user. The current read-then-save subscription upsert can race against the composite key; production needs an atomic upsert.
+A subscription uses a composite user/category key and stores a centre, radius in kilometres (0.1-100), priority, and optional quiet hours. Default centre is approximately Lagos (6.5244, 3.3792). The UI uses selected pilot-area centres and typically five kilometres. Category preference changes are scoped to the authenticated user. Subscription writes use an atomic upsert on the composite key, so repeated saves update the same row instead of racing.
 
 New reports have normal priority. Matching excludes the reporter, checks category, geographic distance from each saved centre, and quiet hours, then writes a durable local inbox job in the report transaction. The job has channel in_app, provider local-inbox, deliveryState delivered, and pushState queued. Quiet hours use the server's local getHours/getDay timezone, not an explicit per-user zone. Time-string helpers do not guarantee full runtime validation of subscription quiet-hour input. In-app read acknowledgment preserves timestamps and is unrelated to emergency responder acknowledgment.
 
@@ -237,9 +253,9 @@ The test-push endpoint targets only an endpoint owned by the current user. Disab
 
 The React entry mounts App with routing. Routes are / (landing), /login, /register, and /dashboard; unknown paths fall back to the landing view rather than a dedicated 404. Login and registration share authentication UI. Registration verifies the phone, saves the profile, then creates category subscriptions. Those independent calls are not one transaction, so partial completion is possible. A consent checkbox is a demonstration acknowledgment, not a complete legal/consent management system.
 
-Dashboard loads profile, reports, subscriptions, inbox, and optionally moderation queue; shared action handling tracks loading/errors and reloads data. Report publishing uses a preview before submission. Confirmation asks the user to attest firsthand knowledge. Report links use a UUID query parameter; notification clicks navigate to the selected report and authentication preserves the query path. The moderation UI offers a subset of backend states with reasons. The 'My reports' tab filters the currently loaded feed (up to 100), not a complete historical report query.
+Dashboard loads profile, reports, subscriptions, inbox, and optionally moderation queue; shared action handling tracks loading/errors and reloads data. Report publishing uses a preview before submission. Confirmation asks the user to attest firsthand knowledge. Report links use a UUID query parameter; notification clicks navigate to the selected report and authentication preserves the query path. The moderation UI offers a subset of backend states with reasons. The 'My reports' tab filters the currently loaded feed (up to 100), not a complete historical report query. The community panel can add a demo billing record or choose a plan, supply a payment email, open the checkout link, refresh a reference, and verify a payment. The SOS form can attach an escalation policy with maximum levels and channels; the evidence panel shows scan badges and disables opening non-clean assets.
 
-Pilot areas are Yaba, Ikeja, Surulere, Eti-Osa, Lagos Island, and Ikorodu with manually specified centres. This is not live GPS, a geocoder, or a complete map interface. Legacy LGA selector/data files remain in the tree but do not define the current registration flow. Category/help labels are shared data. Styling uses Tailwind and existing design tokens, including primary green #12d900 and dark #303234. Landing-page marketing copy and testimonials are not evidence of implemented backend capabilities; legal/footer placeholders require product review.
+Pilot areas are Yaba, Ikeja, Surulere, Eti-Osa, Lagos Island, and Ikorodu with manually specified centres. This is not live GPS, a geocoder, or a complete map interface. Legacy LGA selector/data files remain in the tree but do not define the current registration flow. Category/help labels are shared data. Styling uses Tailwind and existing design tokens, including primary green #12d900 and dark #303234. Landing-page marketing copy and testimonials are not evidence of implemented backend capabilities; the page still says "No emergency dispatch" to mean this is not emergency services, not that consent-scoped SMS dispatch is absent. The dashboard pilot banner still says SMS is not connected, which no longer matches the optional `DISPATCH_DRIVER=sms` implementation and needs copy review. Legal/footer placeholders require product review.
 
 ### Service worker and installation
 
@@ -255,9 +271,11 @@ For temporary phone access, install cloudflared or supply CLOUDFLARED_PATH and r
 
 ## API contract
 
-The global prefix is `/api`; Swagger is `/api/docs`. Requests use JSON and Bearer access tokens where protected. Global ValidationPipe transforms and strips/rejects unexpected fields through whitelist + forbidNonWhitelisted. These checks apply to decorated DTO classes, not erased inline TypeScript interfaces. UUID pipes validate applicable report route IDs. Standard Nest exceptions carry statusCode/message/error. Controller POSTs default to 201 unless HttpCode overrides them; GET/PUT/DELETE default to 200. Subscription deletion explicitly returns 204. Report deletion returns a message with 200. Some legacy getters return null with 200 rather than the 404 advertised in Swagger.
+The global prefix is `/api`; Swagger is `/api/docs` outside production, or in production only with `SWAGGER_ENABLED=true`. Requests use JSON and Bearer access tokens where protected. Global ValidationPipe transforms and strips/rejects unexpected fields through whitelist + forbidNonWhitelisted; request bodies use decorated DTO classes rather than inline TypeScript interfaces. UUID pipes validate applicable report route IDs. Standard Nest exceptions carry statusCode/message/error. Controller POSTs default to 201 unless HttpCode overrides them; GET/PUT/DELETE default to 200. Subscription deletion explicitly returns 204. Report deletion returns a message with 200. Some legacy getters return null with 200 rather than the 404 advertised in Swagger.
 
-The route inventory below lists actual controller decorators, method parameter types, guards, role metadata, and explicit status overrides. Authentication decorators on a controller apply to all methods; method role metadata overrides controller role defaults. Notifications defaults to super_admin but user-facing inbox/subscription methods explicitly admit all user roles. The user-deliveries route uses the authenticated ID even though its URL includes userId. Use the symbol inventory for the exact request DTO fields and validators.
+Security headers (`Content-Security-Policy`, `X-Content-Type-Options`, `X-Frame-Options`, COOP/CORP, Referrer-Policy, and HSTS when HTTPS is detected) and `X-Request-Id` are applied to responses. CORS is explicit through `CORS_ORIGIN`. Redis-backed rate-limit headers report the window; health and webhook paths are exempt, and auth buckets fail closed when Redis is unavailable.
+
+The route inventory below lists historical controller decorators, method parameter types, guards, role metadata, and explicit status overrides from the pinned appendix; verify current routes in source. Authentication decorators on a controller apply to all methods; method role metadata overrides controller role defaults. Notifications defaults to super_admin but user-facing inbox/subscription methods explicitly admit all user roles. The user-deliveries route uses the authenticated ID even though its URL includes userId. Use the pinned symbol inventory only as a historical field reference, not as the current DTO contract.
 
 ### Typical requests
 
@@ -268,7 +286,7 @@ Content-Type: application/json
 {"phone":"+2348000000001"}
 ```
 
-Read the private host mailbox, then POST /api/auth/verify-otp with `phone` and `otp`. The frontend stores the returned session and uses its access token. POST /api/auth/refresh takes refreshToken and returns a new access token.
+In console demo mode, read the private host mailbox; with WhatsApp or SMS delivery, wait for the provider message. Then POST /api/auth/verify-otp with `phone` and `otp`. The frontend stores the returned session and uses its access token. POST /api/auth/refresh takes refreshToken and returns a new access token.
 
 ```http
 POST /api/reports
@@ -381,25 +399,29 @@ Source: [backend/src/modules/reports/controllers/reports.controller.ts](https://
 
 ## Persistence and source reference
 
-Entity decorators in the inventory below are the schema reference: Entity names identify tables; Column includes database names, SQL types, lengths, defaults, and nullability; PrimaryGeneratedColumn produces generated IDs; PrimaryColumn defines composite keys; Index/Unique define declared constraints; ManyToOne/OneToMany/JoinColumn describe relationships. A TypeScript optional marker alone does not establish database nullability. jsonb stores structured metadata without automatically validating its shape. timestamptz stores instants; presentation timezone is a separate concern.
+The pinned source inventory below is a historical schema snapshot; the current TypeORM entities and initial migration are authoritative. In that inventory, Entity names identify tables; Column includes database names, SQL types, lengths, defaults, and nullability; PrimaryGeneratedColumn produces generated IDs; PrimaryColumn defines composite keys; Index/Unique define declared constraints; ManyToOne/OneToMany/JoinColumn describe relationships. A TypeScript optional marker alone does not establish database nullability. jsonb stores structured metadata without automatically validating its shape. timestamptz stores instants; presentation timezone is a separate concern.
 
-Core relationships are users -> reports, reports/users -> confirmations, users -> notification_subscriptions/push_devices, and actors/targets -> moderation_actions. Notification deliveries link recipients to report-triggered payloads; some inherited columns retain incident/SOS names even when used for report IDs. Incident grouping/linking, evidence, communities/membership/responders, SOS/escalations, billing plans/subscriptions/usage, and analytics now have services, controllers, and tests on top of these tables; deeper product rules (payment capture, responder dispatch SLAs, escalation automation) remain outside this demo.
+Core relationships are users -> reports, reports/users -> confirmations, users -> notification_subscriptions/push_devices, and actors/targets -> moderation_actions. Notification deliveries link recipients to report-triggered payloads; some inherited columns retain incident/SOS names even when used for report IDs. Incident grouping/linking, evidence with scan metadata, communities/membership/responders, SOS/escalation events, billing plans/subscriptions/payment attempts/events, and analytics have services and controllers on top of these tables; payment capture, in-app escalation, and object storage/scanning are implemented, while responder dispatch remains best-effort SMS without SLAs.
 
 ## Tests and troubleshooting
 
-For runtime changes, run `npm run build`, `npm test`, `npm run lint --workspace backend`, and relevant integration checks. The HTTP suite needs Docker services and the compiled backend. It starts its own backend on port 3100 with Web Push polling disabled, uses the guarded demo database, creates synthetic accounts, and cleans its rows and test OTP file in teardown. It writes ignored .local/api-test.log. The guard checks DEMO_MODE and the exact demo database name, but do not point it at valuable data merely because those names match. Root .local must exist for private artifacts. Forced termination can prevent cleanup. The suite is not an isolated disposable database per run.
+For runtime changes, run `npm run build`, `npm test`, `npm run lint --workspace backend`, and relevant integration checks. CI also runs backend typecheck (`tsc --noEmit`), a production-dependency audit at high severity, and migration verification (`migration:run`/`migration:show`) against a fresh database. The HTTP suite needs Docker services and the compiled backend. It starts its own backend on port 3100 with Web Push polling disabled, uses the guarded demo database, creates synthetic accounts, and cleans its rows and test OTP file in teardown. It writes ignored .local/api-test.log. The guard checks DEMO_MODE and the exact demo database name, but do not point it at valuable data merely because those names match. Root .local must exist for private artifacts. Forced termination can prevent cleanup. The suite is not an isolated disposable database per run.
 
-Vitest covers the app controller, OTP behavior, moderation controllers/services/repositories, notification controllers/services/repositories, and Web Push queue/provider behavior. Report rules are exercised through the HTTP integration suite. The exact case names are listed per test file below. Mock provider tests verify application behavior, not every OS/browser's notification presentation. HTTP tests exercise authentication, public projections, invalid inputs, votes, moderation, notifications, and stored data boundaries. There is no complete automated browser accessibility/UI suite or real SMS integration test. Documentation-only changes need link/content validation rather than unrelated runtime tests.
+Vitest covers the app controller, production environment validation, phone normalization, OTP/SMS OTP behavior, payment gateway, moderation, notifications, Web Push, evidence scanning, dispatch, and SOS escalation. The exact case names for the historical snapshot are listed per test file below; current cases should be read from source. Mock provider tests verify application behavior, not every OS/browser's notification presentation or live SMS/payment provider behavior. HTTP tests exercise authentication, public projections, invalid inputs, votes, moderation, notifications, and stored data boundaries. `npm audit fix` resolved production high-severity advisories; remaining moderate advisories are in TypeORM/glob transitive tooling and are not automatically fixable without breaking changes. There is no complete automated browser accessibility/UI suite. Documentation-only changes need link/content validation rather than unrelated runtime tests.
 
 | Symptom | Investigation |
 | --- | --- |
 | Cannot connect to database/Redis | Start Docker, run root db:up, check ports 55432/56379 and backend/.env; inspect docker compose -p signal-demo ps/logs |
-| Missing PostGIS/schema | Check fresh-volume initialization and DEMO_MODE; existing volumes do not rerun init SQL; production needs migrations |
-| API not reachable | Start backend, check 127.0.0.1:3000/api and logs; ensure proxy API_PORT matches |
+| Missing PostGIS/schema | On a fresh volume, the initial migration installs `postgis`/`uuid-ossp` and all tables; in demo mode synchronization may create them. Run the backend `migration:run`/`migration:show` scripts when `DEMO_MODE` is off |
+| API not reachable | Start backend, check 127.0.0.1:3000/api and logs; ensure proxy API_PORT matches and BIND_HOST exposes the expected interface |
 | Phone cannot open localhost | Use the shared HTTPS URL; phone localhost is not the host computer |
-| OTP rejected after restart | Request a fresh code; private JSON is a mailbox, not authoritative storage |
+| OTP rejected after restart | Request a fresh code; OTP state lives in Redis and the private JSON is a console-only mailbox |
 | OTP limited | Reuse a signed-in session or wait for the fifteen-minute window; do not weaken limits for ordinary use |
-| Authentication 503 | Demo OTP is disabled or NODE_ENV is production; SMS adapter does not exist yet |
+| Authentication 503 | Console OTP outside demo mode, or the selected WhatsApp/SMS provider is unconfigured; check `OTP_DELIVERY_DRIVER`/`WHATSAPP_DRIVER` |
+| Production startup fails | Read the collected validation errors; fix `DEMO_MODE`, secrets, `CORS_ORIGIN`, `TRUST_PROXY`, and selected provider credentials |
+| Requests return 429 | Check `RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_MAX`, `TRUST_PROXY`, and Redis; health and webhook paths are exempt |
+| Payment webhook rejected | Verify the `x-paystack-signature`/`x-payment-signature` header and raw body against `PAYMENT_WEBHOOK_SECRET` |
+| Evidence cannot be opened | Check `scanState`; infected/error assets are quarantined and not downloadable |
 | Stale frontend after edit | Development uses Vite; built serving requires rebuild; inspect installed service-worker/cache state |
 | Missing notification | Check saved category/centre/radius, reporter exclusion, quiet hours/server timezone, inbox, permission, device ownership and registration time |
 | Push unavailable | Require HTTPS, active service worker, compatible browser, configured VAPID pair, explicit user permission; on Apple mobile use installed app |
@@ -410,22 +432,22 @@ Vitest covers the app controller, OTP behavior, moderation controllers/services/
 
 ## Production release requirements
 
-This implementation has development defaults and incomplete security/operations paths. A production deployment is new engineering work, not just a different start command.
+This implementation has development defaults and still needs operational hardening. Startup validation and CI catch unsafe configuration, but a production deployment is not just a different start command.
 
-1. Resolve authorization gaps: remove writable privacySettings.isAdmin trust, validate administrative/quick-action DTOs, scope moderator access, define appeal ownership, prevent self/duplicate abuse, and review role bootstrap and account lifecycle policies.
-2. Implement real SMS delivery and canonical phone normalization; move OTP/rate-limit state to shared storage; add IP/device throttles, fraud controls, refresh rotation/revocation, secret validation, and appropriate security headers/CSP.
-3. Build reviewed versioned migrations, create PostGIS deliberately, use least-privilege credentials, disable synchronize, and test upgrades/rollback on a copy. Add encrypted backups, retention policy, and restore drills. Avoid treating database down as backup.
-4. Deploy a stable HTTPS origin with TLS termination/reverse proxy, same-origin /api routing, correct CORS, explicit NODE_ENV=production, managed secrets, persistent VAPID keys, and nonpublic database/Redis. The loopback API needs an ingress proxy on the same host or an explicit binding redesign for separate containers.
+1. Authorization has improved (no `privacySettings.isAdmin` trust, validated administrative/quick-action DTOs); still scope moderator access, define appeal ownership, prevent self/duplicate abuse, and review role bootstrap and account lifecycle policies.
+2. Use production validation as a gate: non-placeholder secrets of at least 32 characters, distinct JWT secrets, a specific HTTPS `CORS_ORIGIN`, positive `TRUST_PROXY`, real OTP provider credentials, ClamAV scanning, Paystack credentials with an HTTPS callback, and a reviewed `DISPATCH_DRIVER` choice (`off` by default; `sms` requires credentials). Canonical phone normalization, shared Redis OTP/rate-limit state, security headers, and request IDs are in place; still add device throttles, fraud controls, and refresh rotation/revocation.
+3. Use the versioned migrations deliberately: the initial migration creates `postgis`/`uuid-ossp` and all current tables. Keep `DEMO_MODE` synchronization development-only, use least-privilege credentials, and test upgrades/rollback on a copy. Add encrypted backups, retention policy, and restore drills; do not treat database health as a backup.
+4. Deploy a stable HTTPS origin with TLS termination/reverse proxy, same-origin /api routing, correct CORS, explicit `NODE_ENV=production` and `BIND_HOST`, managed secrets, persistent VAPID keys, a reviewed `JSON_BODY_LIMIT`, and nonpublic database/Redis. Swagger stays off unless `SWAGGER_ENABLED=true`. The loopback API needs an ingress proxy on the same host or an explicit binding redesign for separate containers.
 5. Containerize or supervise processes, add health/readiness checks, structured redacted logs, error tracking, metrics, graceful worker drain, and push retry/queue monitoring. Installed telemetry dependencies do not mean telemetry is configured. See [Monitoring and uptime](#monitoring-and-uptime) for the external probe contract, exit-code script, and example container/orchestrator checks.
-6. Review indexes/query plans and per-report profile-count queries, paginate inbox/history, use atomic subscription upserts/deduplication, add load/concurrency tests, and establish Web Push provider/browser acceptance tests. Decide under-review vote policy and local timezone handling.
-7. Harden the newly completed workflows: validate SOS escalation/sharing policy semantics, add real payment capture and plan enforcement for billing, define responder dispatch SLAs, add evidence virus scanning/object storage and retention enforcement, and decide badge wording and false-report/abuse handling with the product owner.
-8. Establish CI checks, environment-separated deployment, dependency review, accessibility/browser testing, explicit licensing, privacy/consent/terms, deletion/retention procedures, and real incident escalation disclaimers in product policy. Do not imply emergency dispatch currently exists.
+6. Review indexes/query plans and per-report profile-count queries, paginate inbox/history, confirm atomic subscription upserts/deduplication under load, add load/concurrency tests, and establish Web Push provider/browser acceptance tests. Decide under-review vote policy and local timezone handling.
+7. Review the completed workflows: payment plan enforcement/renewals and webhook replay handling, responder dispatch SLAs and consent policy, escalation policy semantics (`sms` is accepted but the worker emits in-app events), evidence retention enforcement/object storage, and badge wording/false-report handling with the product owner.
+8. CI now includes build, lint, typecheck, unit/e2e tests, a high-severity production-dependency audit, and migration verification. Still add environment-separated deployment, dependency review for the remaining moderate TypeORM/glob advisories, accessibility/browser testing, explicit licensing, privacy/consent/terms, deletion/retention procedures, and emergency-service disclaimers in product policy. Describe dispatch as best-effort, not emergency services.
 
-There are no committed Dockerfiles, migration workflow, or deployment CI pipeline in this snapshot. Keep public development docs separate from private walkthroughs, .env files, OTPs, VAPID private keys, tunnel artifacts, and the original private product plan.
+Docker Compose, the migration workflow, and CI checks are present, but there are no committed Dockerfiles or environment-separated deployment pipeline. Keep public development docs separate from private walkthroughs, .env files, OTPs, VAPID private keys, tunnel artifacts, and the original private product plan.
 
 ## Complete source inventory
 
-This inventory covers every tracked TS/JS/JSX/MJS file in the integrated snapshot, including tests and configuration modules. Source links show complete executable bodies. Imports identify dependencies; class decorators identify wiring; fields include persistence/validation metadata; methods/functions identify callable units. Nested helpers are included where parsed. Signatures are compact navigation summaries (object/destructuring syntax may be shortened); the pinned source is authoritative for complete signatures, branching, return types, and algorithms. This appendix complements the behavior explanations above rather than claiming every declared method is fully implemented.
+This historical inventory covers every tracked TS/JS/JSX/MJS file in the pinned snapshot, including tests and configuration modules. Source links show complete executable bodies at that commit, not current working-tree behavior; use the behavior and configuration sections above for current details. Imports identify dependencies; class decorators identify wiring; fields include persistence/validation metadata; methods/functions identify callable units. Nested helpers are included where parsed. Signatures are compact navigation summaries (object/destructuring syntax may be shortened); the pinned source is authoritative for the snapshot's complete signatures, branching, return types, and algorithms. This appendix complements the behavior explanations above rather than claiming every declared method is fully implemented.
 
 Decorator reading: IsOptional skips other validators for absent values; IsEnum/IsIn constrain choices; Min/Max constrain numbers; MinLength/MaxLength constrain strings; ValidateNested plus Type instantiate/validate nested DTOs. InjectRepository selects an entity repository. UseGuards applies authentication/authorization. Roles supplies role metadata read by RolesGuard. Api* decorators describe Swagger, not enforcement. Module imports/providers/controllers/exports establish dependency-injection visibility. Tests' describe/test strings state their intended assertions; consult the linked body for assertion details.
 

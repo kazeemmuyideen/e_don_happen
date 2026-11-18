@@ -20,7 +20,9 @@ export class SendOtpDto {
   @ApiProperty({ example: '+2348012345678' })
   @IsString()
   @IsNotEmpty()
-  @Matches(/^\+?[1-9]\d{1,14}$/, { message: 'Invalid phone number format' })
+  @Matches(/^\+?(?:0\d{10}|[1-9]\d{7,14})$/, {
+    message: 'Invalid phone number format',
+  })
   phone: string;
 }
 
@@ -28,7 +30,9 @@ export class VerifyOtpDto {
   @ApiProperty({ example: '+2348012345678' })
   @IsString()
   @IsNotEmpty()
-  @Matches(/^\+?[1-9]\d{1,14}$/, { message: 'Invalid phone number format' })
+  @Matches(/^\+?(?:0\d{10}|[1-9]\d{7,14})$/, {
+    message: 'Invalid phone number format',
+  })
   phone: string;
 
   @ApiProperty({ example: '123456' })
@@ -113,7 +117,7 @@ export class AssignResponderDto extends UserTargetDto {
   communityId: string;
 }
 
-export class AssignCommunityAdminDto extends AssignResponderDto {}
+export class AssignCommunityAdminWithCommunityDto extends AssignResponderDto {}
 
 export class UserAccountActionDto extends UserTargetDto {
   @ApiPropertyOptional({ maxLength: 1000 })

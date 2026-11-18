@@ -1,7 +1,6 @@
 import { UserRole } from '../identity/interfaces/identity.interface.js';
 import {
   Injectable,
-  Logger,
   NotFoundException,
   ForbiddenException,
   BadRequestException,
@@ -31,7 +30,6 @@ import {
 
 @Injectable()
 export class ModerationService {
-  private readonly logger = new Logger(ModerationService.name);
   private readonly ALLOWED_STATE_TRANSITIONS: Record<string, string[]> = {
     [ReportState.UNVERIFIED]: [
       ReportState.UNDER_REVIEW,
