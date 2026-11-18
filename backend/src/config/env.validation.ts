@@ -18,6 +18,10 @@ function isPlaceholder(value: string) {
   return PLACEHOLDER_VALUES.has(value.toLowerCase());
 }
 
+function isPositiveHopCount(value: string) {
+  return /^[1-9]\d*$/.test(value);
+}
+
 function requireValue(
   env: Environment,
   name: string,
@@ -72,15 +76,15 @@ export function validateProductionEnvironment(
 
   requireValue(env, 'DB_USERNAME', errors);
   requireValue(env, 'DB_PASSWORD', errors, { minLength: 12 });
+  requireValue(env, 'BIND_HOST', errors);
 
   const corsOrigin = value(env, 'CORS_ORIGIN');
   if (!corsOrigin || corsOrigin === '*' || !corsOrigin.startsWith('https://')) {
     errors.push('CORS_ORIGIN must be a specific HTTPS origin');
   }
 
-  const proxyTrust = parseProxyTrust(value(env, 'TRUST_PROXY'));
-  if (typeof proxyTrust !== 'number') {
-    errors.push('TRUST_PROXY must be a positive trusted-hop count');
+  if (!isPositiveHopCount(value(env, 'TRUST_PROXY'))) {
+    errors.push('TRUST_PROXY must be a positive integer trusted-hop count');
   }
 
   const otpDriver =

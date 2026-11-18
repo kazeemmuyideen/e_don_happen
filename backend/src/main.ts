@@ -25,7 +25,9 @@ async function bootstrap() {
     json({
       limit: bodyLimit,
       verify: (req: any, _res, buffer) => {
-        req.rawBody = buffer;
+        if (req.originalUrl?.startsWith('/api/webhooks/')) {
+          req.rawBody = buffer;
+        }
       },
     }),
   );

@@ -146,7 +146,7 @@ export default function Landing() {
           <div>
             {/* <span className="inline-flex items-center gap-2 rounded-full border border-primary/40 bg-primary-soft px-4 py-1.5 text-xs font-semibold text-ink">
               <span className="size-1.5 animate-pulse rounded-full bg-primary" />
-              Live across Lagos
+              Lagos pilot demo
             </span> */}
             <h1 className="mt-5 text-4xl font-black leading-[1.05] tracking-tight text-ink sm:text-5xl lg:text-6xl">
               Something happen?
@@ -170,7 +170,7 @@ export default function Landing() {
               </a>
             </div>
             <div className="mt-8 flex items-center gap-4 text-sm text-ink-soft">
-              <div className="flex -space-x-2">
+              <div aria-hidden className="flex -space-x-2">
                 {['CO', 'AM', 'BA', 'UD'].map((initials) => (
                   <span
                     key={initials}
@@ -181,7 +181,7 @@ export default function Landing() {
                 ))}
               </div>
               <p>
-                <span className="font-semibold text-ink">Local pilot</span> |
+                <span className="font-semibold text-ink">Illustrative pilot demo</span> |
                 WhatsApp verification | no emergency dispatch
               </p>
             </div>
@@ -217,14 +217,14 @@ export default function Landing() {
                       !
                     </span>
                     <p className="text-[11px] font-semibold text-ink">
-                      3 new notifications at your location
+                      Sample: 3 notifications at your location
                     </p>
                   </div>
                 </div>
               </div>
             </div>
             <span className="absolute -right-4 -top-4 rounded-full bg-primary px-3 py-1.5 text-xs font-bold text-ink shadow-lg">
-              Live
+              Sample mockup
             </span>
           </div>
         </div>
@@ -241,7 +241,7 @@ export default function Landing() {
               Three steps. That is all.
             </h2>
             <p className="mt-4 text-sm leading-relaxed text-white/60 sm:text-base">
-              From sign-up to your first alert in less than two minutes.
+              A guided look at sign-up, area choice and where local alerts would appear.
             </p>
           </div>
           <div className="mt-12 grid gap-6 md:grid-cols-3">
@@ -288,10 +288,17 @@ export default function Landing() {
         </div>
       </section>
 
-      {/* Social proof */}
       <section className="bg-primary-soft py-16 sm:py-20">
         <div className="container-app">
-          <div className="grid gap-8 rounded-3xl bg-white p-8 shadow-lg sm:grid-cols-2 lg:grid-cols-4">
+          <div className="mx-auto max-w-2xl text-center">
+            <span className="text-xs font-bold uppercase tracking-[0.2em] text-primary-dark">
+              Illustrative pilot values
+            </span>
+            <p className="mt-2 text-sm text-ink-soft">
+              These are configuration examples, not live usage figures.
+            </p>
+          </div>
+          <div className="mt-8 grid gap-8 rounded-3xl bg-white p-8 shadow-lg sm:grid-cols-2 lg:grid-cols-4">
             {STATS.map((stat) => (
               <div key={stat.label} className="text-center">
                 <p className="text-3xl font-black tracking-tight text-ink sm:text-4xl">
@@ -356,7 +363,7 @@ export default function Landing() {
             Your location is already talking. E don happen — go hear am.
           </h2>
           <p className="mx-auto mt-4 max-w-xl text-sm leading-relaxed text-ink/70 sm:text-base">
-            Join thousands who get the news from their own location first. Free forever.
+            Try the free Lagos pilot and see how local reporting works. No emergency dispatch.
           </p>
           <div className="mt-8 flex flex-wrap justify-center gap-3">
             <Link to="/register" className="btn bg-ink text-white hover:bg-black">

@@ -29,6 +29,7 @@ import {
 } from './services/payment-gateway.service.js';
 
 const BILLING_PERIOD_DAYS = 30;
+const SUCCESS_PAYMENT_EVENTS = new Set(['charge.success', 'payment.success']);
 const PAYMENT_AMOUNTS: Record<string, number> = {
   standard: 500_000,
   premium: 1_500_000,
@@ -199,13 +200,24 @@ export class BillingService {
       status: event.status ?? null,
       payload,
     });
-    await this.paymentEventRepo.save(record);
+    try {
+      await this.paymentEventRepo.save(record);
+    } catch (error) {
+      if (this.isDuplicatePaymentEvent(error)) {
+        return { received: true, duplicate: true };
+      }
+      throw error;
+    }
 
     if (event.reference && this.isSuccessEvent(event.event, event.status)) {
       const attempt = await this.paymentAttemptRepo.findOne({
         where: { reference: event.reference },
       });
-      if (attempt && attempt.status !== 'succeeded') {
+      if (
+        attempt &&
+        attempt.reference === event.reference &&
+        attempt.status !== 'succeeded'
+      ) {
         try {
           await this.settlePayment(attempt, 'payment-webhook');
         } catch (error) {
@@ -224,64 +236,147 @@ export class BillingService {
   private async settlePayment(attempt: PaymentAttempt, actorId: string) {
     if (attempt.status === 'succeeded') return this.presentAttempt(attempt);
 
-    const verification = await this.paymentGateway.verify(attempt.reference);
-    if (verification.status === 'success') {
-      await this.activateSubscription(attempt, verification, actorId);
-      return this.presentAttempt(attempt);
-    }
+    let activation:
+      | {
+          subscriptionId: string;
+          reference: string;
+          communityId: string;
+          plan: string;
+        }
+      | undefined;
 
-    attempt.status = verification.status;
-    attempt.providerResponse = verification as any;
-    if (verification.status === 'failed') attempt.completedAt = new Date();
-    await this.paymentAttemptRepo.save(attempt);
-    return this.presentAttempt(attempt);
-  }
+    const settled = await this.paymentAttemptRepo.manager.transaction(
+      async (manager) => {
+        const locked = await manager.findOne(PaymentAttempt, {
+          where: { id: attempt.id },
+          lock: { mode: 'pessimistic_write' },
+        });
+        if (!locked) throw new NotFoundException('Payment attempt not found');
+        if (locked.status === 'succeeded') return this.presentAttempt(locked);
 
-  private async activateSubscription(
-    attempt: PaymentAttempt,
-    verification: PaymentVerification,
-    actorId: string,
-  ) {
-    let subscription = await this.subscriptionRepo.findOne({
-      where: { billingReference: attempt.reference },
-    });
-    if (!subscription) {
-      subscription = this.subscriptionRepo.create({
-        organisationOrCommunityId: attempt.communityId,
-        plan: attempt.plan,
-        status: 'active',
-        billingReference: attempt.reference,
-        renewalDate: this.nextRenewalDate(),
+        const verification = await this.paymentGateway.verify(locked.reference);
+        this.assertVerification(locked, verification);
+
+        if (verification.status !== 'success') {
+          locked.status = verification.status;
+          locked.providerResponse = verification as any;
+          if (verification.status === 'failed') locked.completedAt = new Date();
+          const saved = await manager.save(PaymentAttempt, locked);
+          return this.presentAttempt(saved);
+        }
+
+        let subscription = await manager.findOne(Subscription, {
+          where: { billingReference: locked.reference },
+        });
+        if (!subscription) {
+          subscription = manager.create(Subscription, {
+            organisationOrCommunityId: locked.communityId,
+            plan: locked.plan,
+            status: 'active',
+            billingReference: locked.reference,
+            renewalDate: this.nextRenewalDate(),
+          });
+        }
+        subscription.plan = locked.plan;
+        subscription.status = 'active';
+        subscription.renewalDate = this.nextRenewalDate();
+        subscription.billingReference = locked.reference;
+        const savedSubscription = await manager.save(Subscription, subscription);
+
+        locked.status = 'succeeded';
+        locked.subscriptionId = savedSubscription.id;
+        locked.completedAt = verification.paidAt ?? new Date();
+        locked.providerResponse = verification as any;
+        const savedAttempt = await manager.save(PaymentAttempt, locked);
+        activation = {
+          subscriptionId: savedSubscription.id,
+          reference: locked.reference,
+          communityId: locked.communityId,
+          plan: locked.plan,
+        };
+        return this.presentAttempt(savedAttempt);
+      },
+    );
+
+    if (activation) {
+      await this.audit.record({
+        actorId,
+        action: 'billing.payment_verified',
+        targetId: activation.subscriptionId,
+        metadata: {
+          reference: activation.reference,
+          communityId: activation.communityId,
+          plan: activation.plan,
+        },
       });
     }
-    subscription.plan = attempt.plan;
-    subscription.status = 'active';
-    subscription.renewalDate = this.nextRenewalDate();
-    subscription.billingReference = attempt.reference;
-    const saved = await this.subscriptionRepo.save(subscription);
+    return settled;
+  }
 
-    attempt.status = 'succeeded';
-    attempt.subscriptionId = saved.id;
-    attempt.completedAt = verification.paidAt ?? new Date();
-    attempt.providerResponse = verification as any;
-    await this.paymentAttemptRepo.save(attempt);
-    await this.audit.record({
-      actorId,
-      action: 'billing.payment_verified',
-      targetId: saved.id,
-      metadata: {
-        reference: attempt.reference,
-        communityId: attempt.communityId,
-        plan: attempt.plan,
-      },
-    });
+  private assertVerification(
+    attempt: PaymentAttempt,
+    verification: PaymentVerification,
+  ) {
+    if (!['success', 'pending', 'failed'].includes(verification.status)) {
+      throw new BadRequestException('Payment provider returned an invalid status');
+    }
+    if (verification.reference !== attempt.reference) {
+      throw new BadRequestException(
+        'Payment provider reference does not match the payment attempt',
+      );
+    }
+    if (verification.status !== 'success') return;
+    if (verification.amount !== undefined && verification.amount !== attempt.amount) {
+      throw new BadRequestException(
+        'Payment provider amount does not match the payment attempt',
+      );
+    }
+    if (
+      verification.currency !== undefined &&
+      verification.currency.toUpperCase() !== attempt.currency.toUpperCase()
+    ) {
+      throw new BadRequestException(
+        'Payment provider currency does not match the payment attempt',
+      );
+    }
+    if (this.paymentGateway.provider !== 'demo') {
+      if (typeof verification.amount !== 'number') {
+        throw new BadRequestException('Payment provider did not return an amount');
+      }
+      if (!verification.currency) {
+        throw new BadRequestException('Payment provider did not return a currency');
+      }
+    }
+  }
+
+  private isDuplicatePaymentEvent(error: unknown) {
+    const candidate = error as {
+      code?: string;
+      message?: string;
+      driverError?: {
+        code?: string;
+        constraint?: string;
+        detail?: string;
+        message?: string;
+      };
+    } | null;
+    if (!candidate) return false;
+    const driver = candidate.driverError ?? {};
+    if ((driver.code ?? candidate.code) !== '23505') return false;
+    const details = [
+      driver.constraint,
+      driver.detail,
+      driver.message,
+      candidate.message,
+    ]
+      .filter((part): part is string => typeof part === 'string')
+      .join(' ');
+    return /event_id|payment_events/i.test(details);
   }
 
   private isSuccessEvent(event: string, status?: string) {
     return (
-      event === 'charge.success' ||
-      event === 'payment.success' ||
-      status === 'success'
+      SUCCESS_PAYMENT_EVENTS.has(event) && (!status || status === 'success')
     );
   }
 

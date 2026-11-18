@@ -12,6 +12,7 @@ const productionEnvironment = () => ({
   WHATSAPP_OTP_SECRET: 'c'.repeat(48),
   DB_USERNAME: 'signal',
   DB_PASSWORD: 'a-strong-database-password',
+  BIND_HOST: '127.0.0.1',
   CORS_ORIGIN: 'https://app.example.com',
   TRUST_PROXY: '1',
   OTP_DELIVERY_DRIVER: 'whatsapp',
@@ -53,6 +54,27 @@ describe('production environment validation', () => {
     expect(() =>
       validateProductionEnvironment(productionEnvironment()),
     ).not.toThrow();
+  });
+
+  it('requires an integer trust proxy hop count and explicit bind host', () => {
+    expect(() =>
+      validateProductionEnvironment({
+        ...productionEnvironment(),
+        TRUST_PROXY: 'true',
+      }),
+    ).toThrow(/TRUST_PROXY/);
+    expect(() =>
+      validateProductionEnvironment({
+        ...productionEnvironment(),
+        TRUST_PROXY: 'false',
+      }),
+    ).toThrow(/TRUST_PROXY/);
+    expect(() =>
+      validateProductionEnvironment({
+        ...productionEnvironment(),
+        BIND_HOST: '',
+      }),
+    ).toThrow(/BIND_HOST/);
   });
 
   it('requires provider credentials when a real driver is selected', () => {

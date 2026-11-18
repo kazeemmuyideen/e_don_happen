@@ -1,7 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { getRepositoryToken } from '@nestjs/typeorm';
 import { ConfigService } from '@nestjs/config';
-import { ForbiddenException } from '@nestjs/common';
+import { BadRequestException, ForbiddenException } from '@nestjs/common';
 import { BillingService } from './billing.service.js';
 import { Subscription } from './entities/subscription.entity.js';
 import { PaymentAttempt } from './entities/payment-attempt.entity.js';
@@ -21,6 +21,7 @@ describe('BillingService', () => {
   let userRepo: any;
   let paymentGateway: any;
   let audit: any;
+  let manager: any;
 
   const makeSubscription = () => ({
     id: 'sub-1',
@@ -65,6 +66,20 @@ describe('BillingService', () => {
       create: vi.fn((value) => ({ ...value })),
       save: vi.fn(async (value) => ({ ...value, id: 'event-1' })),
       findOne: vi.fn().mockResolvedValue(null),
+    };
+    manager = {
+      findOne: vi.fn(async (entity: any, options: any) =>
+        entity === PaymentAttempt ? makeAttempt() : subscriptionRepo.findOne(options),
+      ),
+      create: vi.fn((_entity: any, value: any) => ({ ...value })),
+      save: vi.fn(async (entity: any, value: any) =>
+        entity === PaymentAttempt
+          ? paymentAttemptRepo.save(value)
+          : subscriptionRepo.save(value),
+      ),
+    };
+    paymentAttemptRepo.manager = {
+      transaction: vi.fn(async (work: any) => work(manager)),
     };
     communityRepo = {
       findOne: vi.fn().mockResolvedValue({
@@ -229,4 +244,53 @@ describe('BillingService', () => {
     expect(second).toEqual({ received: true, duplicate: true });
     expect(paymentEventRepo.save).toHaveBeenCalledTimes(1);
   });
+
+  it('treats a unique event_id violation as a duplicate webhook', async () => {
+    paymentEventRepo.save
+      .mockResolvedValueOnce({ id: 'event-1' })
+      .mockRejectedValueOnce(
+        Object.assign(new Error('duplicate key'), {
+          code: '23505',
+          driverError: {
+            code: '23505',
+            constraint: 'UQ_payment_events_event_id',
+            detail: 'Key (event_id)=(evt-1) already exists.',
+          },
+        }),
+      );
+
+    const first = await service.handlePaymentWebhook(
+      Buffer.from('{"event":"charge.success"}'),
+      'signature',
+    );
+    const second = await service.handlePaymentWebhook(
+      Buffer.from('{"event":"charge.success"}'),
+      'signature',
+    );
+
+    expect(first).toEqual({ received: true, duplicate: false });
+    expect(second).toEqual({ received: true, duplicate: true });
+    expect(paymentEventRepo.save).toHaveBeenCalledTimes(2);
+  });
+
+  it.each([
+    ['amount', { amount: 500_000, currency: 'NGN' }],
+    ['currency', { amount: 1_500_000, currency: 'USD' }],
+  ])(
+    'rejects a provider response with a mismatched %s',
+    async (_field, verification) => {
+      paymentGateway.provider = 'paystack';
+      paymentGateway.verify.mockResolvedValue({
+        status: 'success',
+        reference: 'ns-1',
+        ...verification,
+      });
+
+      await expect(
+        service.verifyPayment('admin-1', { reference: 'ns-1' }),
+      ).rejects.toBeInstanceOf(BadRequestException);
+      expect(subscriptionRepo.save).not.toHaveBeenCalled();
+      expect(paymentAttemptRepo.save).not.toHaveBeenCalled();
+    },
+  );
 });

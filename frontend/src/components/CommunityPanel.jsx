@@ -7,11 +7,28 @@ const field =
 const panel = 'rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6';
 const ADMIN_ROLES = ['moderator', 'super_admin'];
 
+function Skeleton({ className }) {
+  return (
+    <div
+      aria-hidden
+      className={`animate-pulse rounded-xl bg-ink/10 ${className}`}
+    />
+  );
+}
+
 function money(amount, currency) {
   return new Intl.NumberFormat('en-NG', {
     style: 'currency',
     currency: currency || 'NGN',
   }).format((Number(amount) || 0) / 100);
+}
+
+function normalizePhone(value) {
+  const cleaned = value.trim().replace(/[\s()-]/g, '');
+  if (/^\+[1-9]\d{7,14}$/.test(cleaned)) return cleaned;
+  if (/^0\d{10}$/.test(cleaned)) return `+234${cleaned.slice(1)}`;
+  if (/^234\d{10}$/.test(cleaned)) return `+${cleaned}`;
+  return cleaned;
 }
 
 function squareAround(area) {
@@ -36,12 +53,15 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
   const [detail, setDetail] = useState(null);
   const [name, setName] = useState('');
   const [phone, setPhone] = useState('');
+  const [phoneError, setPhoneError] = useState('');
   const [candidate, setCandidate] = useState(null);
   const [plan, setPlan] = useState('standard');
   const [paymentEmail, setPaymentEmail] = useState('');
   const [payment, setPayment] = useState(null);
   const [subscriptions, setSubscriptions] = useState([]);
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [loadingDetail, setLoadingDetail] = useState(false);
+  const [pending, setPending] = useState({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
 
@@ -67,16 +87,20 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
 
   useEffect(() => {
     let active = true;
-    loadList().catch((err) => {
-      if (active) setError(err.message);
-    });
+    loadList()
+      .catch((err) => {
+        if (active) setError(err.message);
+      })
+      .finally(() => {
+        if (active) setLoading(false);
+      });
     return () => {
       active = false;
     };
   }, [loadList]);
 
-  async function run(work, success) {
-    setBusy(true);
+  async function run(key, work, success) {
+    setPending((current) => ({ ...current, [key]: true }));
     setError('');
     setNotice('');
     try {
@@ -89,13 +113,30 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setPending((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     }
+  }
+
+  async function selectCommunity(id) {
+    await run('select', async () => {
+      setPayment(null);
+      setCandidate(null);
+      setLoadingDetail(true);
+      try {
+        await loadDetail(id);
+      } finally {
+        setLoadingDetail(false);
+      }
+    });
   }
 
   async function createCommunity(event) {
     event.preventDefault();
-    await run(async () => {
+    await run('create', async () => {
       const created = await api('/communities', {
         method: 'POST',
         body: { name: name.trim(), boundary: squareAround(area) },
@@ -109,18 +150,22 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
 
   async function lookup(event) {
     event.preventDefault();
-    await run(async () => {
+    const normalized = normalizePhone(phone);
+    if (!/^\+[1-9]\d{7,14}$/.test(normalized)) {
+      setPhoneError('Use 08012345678 or +2348012345678.');
+      return;
+    }
+    setPhoneError('');
+    await run('lookup', async () => {
       const found = await api(
-        `/communities/${detail.id}/users/lookup?phone=${encodeURIComponent(
-          phone.trim(),
-        )}`,
+        `/communities/${detail.id}/users/lookup?phone=${encodeURIComponent(normalized)}`,
       );
       setCandidate(found);
     });
   }
 
   async function addResponder() {
-    await run(async () => {
+    await run('add', async () => {
       await api(`/communities/${detail.id}/responders`, {
         method: 'POST',
         body: {
@@ -130,12 +175,13 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
       });
       setCandidate(null);
       setPhone('');
+      setPhoneError('');
       await loadDetail(detail.id);
     }, `${candidate.displayName} can now receive SOS alerts for ${detail.name}.`);
   }
 
   async function removeResponder(userId) {
-    await run(async () => {
+    await run(`remove:${userId}`, async () => {
       await api(`/communities/${detail.id}/responders/${userId}`, {
         method: 'DELETE',
       });
@@ -145,7 +191,7 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
 
   async function createSubscription(event) {
     event.preventDefault();
-    await run(async () => {
+    await run('subscription', async () => {
       await api('/billing/subscriptions', {
         method: 'POST',
         body: { communityId: detail.id, plan },
@@ -155,7 +201,7 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
   }
 
   async function cancelSubscription(id) {
-    await run(async () => {
+    await run(`cancel:${id}`, async () => {
       await api(`/billing/subscriptions/${id}/cancel`, { method: 'PUT' });
       await loadDetail(detail.id);
     }, 'Subscription cancelled.');
@@ -163,7 +209,7 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
 
   async function initializePayment(event) {
     event.preventDefault();
-    await run(async () => {
+    await run('payment', async () => {
       const result = await api('/billing/payments/checkout', {
         method: 'POST',
         body: {
@@ -173,11 +219,11 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
         },
       });
       setPayment(result);
-    }, 'Payment initialized. Open the authorization link to pay, then verify it here.');
+    }, 'Payment initialized. Open the authorization link in a new tab to pay, then verify it here.');
   }
 
   async function refreshPayment() {
-    await run(async () => {
+    await run('payment-refresh', async () => {
       setPayment(
         await api(`/billing/payments/${encodeURIComponent(payment.reference)}`),
       );
@@ -185,7 +231,7 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
   }
 
   async function verifyPayment() {
-    await run(async () => {
+    await run('payment-verify', async () => {
       const result = await api('/billing/payments/verify', {
         method: 'POST',
         body: { reference: payment.reference },
@@ -237,36 +283,49 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                 placeholder={`${area} Neighbourhood Watch`}
               />
             </label>
-            <button className="btn-primary" disabled={busy}>
-              {busy ? 'Working...' : 'Create community'}
+            <button className="btn-primary" disabled={Boolean(pending.create)}>
+              {pending.create ? 'Creating…' : 'Create community'}
             </button>
           </form>
 
           <div className={panel}>
             <h2 className="text-xl font-bold">Communities</h2>
             <div className="mt-3 space-y-2">
-              {communities.length ? (
-                communities.map((community) => (
-                  <button
-                    key={community.id}
-                    className={`w-full rounded-xl border px-3 py-2 text-left text-sm ${
-                      detail?.id === community.id
-                        ? 'border-primary bg-primary-soft'
-                        : 'border-ink/10'
-                    }`}
-                    onClick={() =>
-                      run(async () => {
-                        setPayment(null);
-                        await loadDetail(community.id);
-                      })
-                    }
-                  >
-                    <span className="font-bold">{community.name}</span>
-                    <span className="ml-2 text-xs text-ink-soft">
-                      {community.status} | {community.plan}
-                    </span>
-                  </button>
-                ))
+              {loading ? (
+                <div role="status" aria-live="polite" className="space-y-2">
+                  <p className="text-sm text-ink-soft">Loading communities…</p>
+                  <Skeleton className="h-14" />
+                  <Skeleton className="h-14" />
+                </div>
+              ) : communities.length ? (
+                communities.map((community) => {
+                  const selected = detail?.id === community.id;
+                  return (
+                    <button
+                      key={community.id}
+                      className={`w-full rounded-xl border px-3 py-2 text-left text-sm ${
+                        selected ? 'border-primary bg-primary-soft' : 'border-ink/10'
+                      }`}
+                      aria-current={selected ? 'true' : undefined}
+                      disabled={Boolean(pending.select)}
+                      onClick={() => selectCommunity(community.id)}
+                    >
+                      <span className="flex items-center justify-between gap-2">
+                        <span>
+                          <span className="font-bold">{community.name}</span>
+                          <span className="ml-2 text-xs text-ink-soft">
+                            {community.status} | {community.plan}
+                          </span>
+                        </span>
+                        {selected && (
+                          <span className="shrink-0 rounded-full bg-primary px-2 py-1 text-[10px] font-black text-ink">
+                            Selected
+                          </span>
+                        )}
+                      </span>
+                    </button>
+                  );
+                })
               ) : (
                 <p className="text-sm text-ink-soft">
                   No communities yet. Create the first one.
@@ -277,7 +336,20 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
         </div>
 
         <div className="space-y-5">
-          {detail ? (
+          {loading || loadingDetail ? (
+            <div
+              role="status"
+              aria-live="polite"
+              className={`${panel} space-y-3`}
+            >
+              <p className="text-sm text-ink-soft">
+                {loading ? 'Loading community details…' : 'Switching community…'}
+              </p>
+              <Skeleton className="h-8 w-1/2" />
+              <Skeleton className="h-16" />
+              <Skeleton className="h-16" />
+            </div>
+          ) : detail ? (
             <>
               <div className={panel}>
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -287,34 +359,39 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                   </span>
                 </div>
                 <p className="mt-2 text-sm text-ink-soft">
-                  Admin: {detail.admin?.displayName || 'Unknown'} |{' '}
+                  Selected community | Admin:{' '}
+                  {detail.admin?.displayName || 'Unknown'} |{' '}
                   {detail.responders?.length || 0} responders
                 </p>
                 <ul className="mt-4 space-y-2">
                   {detail.responders?.length ? (
-                    detail.responders.map((responder) => (
-                      <li
-                        key={responder.userId}
-                        className="flex items-center justify-between rounded-xl border border-ink/10 px-3 py-2 text-sm"
-                      >
-                        <span>
-                          {responder.displayName || responder.userId} |{' '}
-                          {responder.status}
-                        </span>
-                        {isAdmin && (
-                          <button
-                            className="text-xs font-bold text-red-700 underline"
-                            disabled={busy}
-                            onClick={() => removeResponder(responder.userId)}
-                          >
-                            Remove
-                          </button>
-                        )}
-                      </li>
-                    ))
+                    detail.responders.map((responder) => {
+                      const removeKey = `remove:${responder.userId}`;
+                      return (
+                        <li
+                          key={responder.userId}
+                          className="flex items-center justify-between rounded-xl border border-ink/10 px-3 py-2 text-sm"
+                        >
+                          <span>
+                            {responder.displayName || responder.userId} |{' '}
+                            {responder.status}
+                          </span>
+                          {isAdmin && (
+                            <button
+                              className="text-xs font-bold text-red-700 underline disabled:cursor-not-allowed disabled:no-underline disabled:text-ink-soft"
+                              disabled={Boolean(pending[removeKey])}
+                              onClick={() => removeResponder(responder.userId)}
+                            >
+                              {pending[removeKey] ? 'Removing…' : 'Remove'}
+                            </button>
+                          )}
+                        </li>
+                      );
+                    })
                   ) : (
                     <li className="text-sm text-ink-soft">
-                      No responders yet.
+                      No responders yet. Add a responder below to receive SOS
+                      alerts for this community.
                     </li>
                   )}
                 </ul>
@@ -331,13 +408,30 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                       onChange={(e) => {
                         setPhone(e.target.value);
                         setCandidate(null);
+                        setPhoneError('');
                       }}
                       placeholder="+2348012345678"
+                      aria-invalid={Boolean(phoneError)}
+                      aria-describedby={
+                        phoneError ? 'responder-phone-error' : 'responder-phone-help'
+                      }
                     />
-                    <button className="btn-outline" disabled={busy}>
-                      Find account
+                    <button
+                      className="btn-outline"
+                      disabled={Boolean(pending.lookup)}
+                    >
+                      {pending.lookup ? 'Finding…' : 'Find account'}
                     </button>
                   </form>
+                  <p
+                    id={phoneError ? 'responder-phone-error' : 'responder-phone-help'}
+                    className={`text-xs ${
+                      phoneError ? 'text-red-700' : 'text-ink-soft'
+                    }`}
+                  >
+                    {phoneError ||
+                      'Use 08012345678 or +2348012345678; spaces and dashes are ignored.'}
+                  </p>
                   {candidate && (
                     <div className="rounded-xl bg-primary-soft p-3 text-sm">
                       <p>
@@ -346,10 +440,12 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                       </p>
                       <button
                         className="btn-primary mt-3"
-                        disabled={busy}
+                        disabled={Boolean(pending.add)}
                         onClick={addResponder}
                       >
-                        Add {candidate.displayName} as responder
+                        {pending.add
+                          ? 'Adding…'
+                          : `Add ${candidate.displayName} as responder`}
                       </button>
                     </div>
                   )}
@@ -378,8 +474,13 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                     </select>
                   </label>
                   <form onSubmit={createSubscription}>
-                    <button className="btn-outline" disabled={busy}>
-                      Add demo subscription
+                    <button
+                      className="btn-outline"
+                      disabled={Boolean(pending.subscription)}
+                    >
+                      {pending.subscription
+                        ? 'Adding…'
+                        : 'Add demo subscription'}
                     </button>
                   </form>
                   <form onSubmit={initializePayment} className="space-y-3">
@@ -396,8 +497,11 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                         placeholder="admin@example.com"
                       />
                     </label>
-                    <button className="btn-primary" disabled={busy}>
-                      {busy ? 'Working...' : 'Pay / Initialize'}
+                    <button
+                      className="btn-primary"
+                      disabled={Boolean(pending.payment)}
+                    >
+                      {pending.payment ? 'Initializing…' : 'Pay / Initialize'}
                     </button>
                   </form>
                   {payment && (
@@ -423,23 +527,27 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                           target="_blank"
                           rel="noreferrer"
                         >
-                          Open payment authorization link
+                          Open payment authorization link (opens in a new tab)
                         </a>
                       )}
                       <div className="flex flex-wrap gap-2">
                         <button
                           className="btn-outline"
-                          disabled={busy}
+                          disabled={Boolean(pending['payment-verify'])}
                           onClick={verifyPayment}
                         >
-                          Verify payment
+                          {pending['payment-verify']
+                            ? 'Verifying…'
+                            : 'Verify payment'}
                         </button>
                         <button
                           className="btn-outline"
-                          disabled={busy}
+                          disabled={Boolean(pending['payment-refresh'])}
                           onClick={refreshPayment}
                         >
-                          Check status
+                          {pending['payment-refresh']
+                            ? 'Checking…'
+                            : 'Check status'}
                         </button>
                       </div>
                     </div>
@@ -447,28 +555,31 @@ export default function CommunityPanel({ area, profile, onProfileChanged }) {
                   <div>
                     <h3 className="text-sm font-bold">Subscriptions</h3>
                     <ul className="mt-2 space-y-2">
-                      {subscriptions.map((subscription) => (
-                        <li
-                          key={subscription.id}
-                          className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 px-3 py-2 text-sm"
-                        >
-                          <span>
-                            {subscription.plan} | {subscription.status} | renews{' '}
-                            {new Date(subscription.renewalDate).toLocaleDateString(
-                              'en-NG',
+                      {subscriptions.map((subscription) => {
+                        const cancelKey = `cancel:${subscription.id}`;
+                        return (
+                          <li
+                            key={subscription.id}
+                            className="flex flex-wrap items-center justify-between gap-2 rounded-xl border border-ink/10 px-3 py-2 text-sm"
+                          >
+                            <span>
+                              {subscription.plan} | {subscription.status} | renews{' '}
+                              {new Date(
+                                subscription.renewalDate,
+                              ).toLocaleDateString('en-NG')}
+                            </span>
+                            {subscription.status === 'active' && (
+                              <button
+                                className="text-xs font-bold text-red-700 underline disabled:cursor-not-allowed disabled:no-underline disabled:text-ink-soft"
+                                disabled={Boolean(pending[cancelKey])}
+                                onClick={() => cancelSubscription(subscription.id)}
+                              >
+                                {pending[cancelKey] ? 'Cancelling…' : 'Cancel'}
+                              </button>
                             )}
-                          </span>
-                          {subscription.status === 'active' && (
-                            <button
-                              className="text-xs font-bold text-red-700 underline"
-                              disabled={busy}
-                              onClick={() => cancelSubscription(subscription.id)}
-                            >
-                              Cancel
-                            </button>
-                          )}
-                        </li>
-                      ))}
+                          </li>
+                        );
+                      })}
                     </ul>
                   </div>
                 </div>

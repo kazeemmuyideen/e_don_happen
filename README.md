@@ -55,7 +55,7 @@ OTP delivery uses `OTP_DELIVERY_DRIVER` (falling back to `WHATSAPP_DRIVER`): `wh
 | `npm run demo:serve` | Serve built frontend and proxy the API on port 4173 |
 | `npm run demo:share` | Start an optional temporary public HTTPS tunnel |
 
-Backend-only scripts `typeorm`, `migration:generate`, `migration:run`, `migration:revert`, and `migration:show` use `backend/src/config/typeorm.datasource.ts`. The initial migration installs `postgis`/`uuid-ossp` and creates all current tables; `DEMO_MODE` schema synchronization is development-only.
+Backend-only scripts `typeorm`, `migration:generate`, `migration:run`, `migration:revert`, and `migration:show` use `backend/src/config/typeorm.datasource.ts`. The initial migration installs `postgis`/`uuid-ossp` and creates all current tables; `1794979000000-ScalabilityIndexes.ts` adds query indexes. `DEMO_MODE` schema synchronization is development-only.
 
 ## Mobile and PWA access
 

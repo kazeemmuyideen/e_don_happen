@@ -1,4 +1,3 @@
-import { clientsClaim } from 'workbox-core';
 import {
   cleanupOutdatedCaches,
   precacheAndRoute,
@@ -6,8 +5,9 @@ import {
 } from 'workbox-precaching';
 import { NavigationRoute, registerRoute } from 'workbox-routing';
 
-self.skipWaiting();
-clientsClaim();
+self.addEventListener('message', (event) => {
+  if (event.data?.type === 'SKIP_WAITING') self.skipWaiting();
+});
 cleanupOutdatedCaches();
 precacheAndRoute(self.__WB_MANIFEST);
 // Cache the application shell only. Authenticated API responses stay network-only.

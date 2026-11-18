@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api.js';
 import { AREAS } from '../data/areas.js';
 
@@ -12,6 +12,15 @@ const CHANNEL_OPTIONS = {
   sms: ['sms'],
   both: ['in_app', 'sms'],
 };
+
+function Skeleton({ className }) {
+  return (
+    <div
+      aria-hidden
+      className={`animate-pulse rounded-xl bg-ink/10 ${className}`}
+    />
+  );
+}
 
 function when(value) {
   return new Date(value).toLocaleString('en-NG', {
@@ -37,10 +46,13 @@ export default function SosPanel({ area, profile, focusSosId }) {
   const [escalationEnabled, setEscalationEnabled] = useState(false);
   const [maxLevels, setMaxLevels] = useState('2');
   const [channels, setChannels] = useState('in_app');
-  const [busy, setBusy] = useState(false);
+  const [loading, setLoading] = useState(true);
+  const [pending, setPending] = useState({});
   const [error, setError] = useState('');
   const [notice, setNotice] = useState('');
   const [noticeTone, setNoticeTone] = useState('ok');
+  const [focusNotice, setFocusNotice] = useState('');
+  const focusHandled = useRef('');
 
   useEffect(() => {
     setPlace(area);
@@ -51,16 +63,37 @@ export default function SosPanel({ area, profile, focusSosId }) {
       api('/sos/mine'),
       api('/sos/assigned'),
     ]);
-    setMine(myRequests);
-    setAssigned(dispatched);
+    setMine(Array.isArray(myRequests) ? myRequests : []);
+    setAssigned(Array.isArray(dispatched) ? dispatched : []);
   }, []);
 
   useEffect(() => {
     let active = true;
-    load().catch((err) => {
-      if (active) setError(err.message);
-    });
-    const timer = setInterval(() => load().catch(() => {}), 20000);
+    load()
+      .then(() => {
+        if (active) setLoading(false);
+      })
+      .catch((err) => {
+        if (active) {
+          setError(err.message);
+          setLoading(false);
+        }
+      });
+    const timer = setInterval(() => {
+      setPending((current) => ({ ...current, refresh: true }));
+      load()
+        .catch((err) => {
+          if (active) setError(err.message);
+        })
+        .finally(() => {
+          if (!active) return;
+          setPending((current) => {
+            const next = { ...current };
+            delete next.refresh;
+            return next;
+          });
+        });
+    }, 20000);
     return () => {
       active = false;
       clearInterval(timer);
@@ -68,72 +101,124 @@ export default function SosPanel({ area, profile, focusSosId }) {
   }, [load]);
 
   useEffect(() => {
-    if (!focusSosId) return;
+    if (!focusSosId || loading) return;
+    if (focusHandled.current === focusSosId) return;
+    setFocusNotice('');
     const node = document.getElementById(`sos-${focusSosId}`);
-    node?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-  }, [focusSosId, mine, assigned]);
+    focusHandled.current = focusSosId;
+    if (node) {
+      node.scrollIntoView({ behavior: 'smooth', block: 'center' });
+      return;
+    }
+    let active = true;
+    api(`/sos/${encodeURIComponent(focusSosId)}`)
+      .then((sos) => {
+        if (!active) return;
+        setFocusNotice(
+          OPEN.includes(sos.state)
+            ? `This SOS is still ${sos.state}, but it is not in your current lists. Check with the requester or your community admin.`
+            : `This SOS is already ${sos.state}. Closed signals are not shown in the open lists.`,
+        );
+      })
+      .catch((err) => {
+        if (!active) return;
+        setFocusNotice(
+          /not found/i.test(err.message)
+            ? 'This SOS link could not be found. It may have expired or been removed.'
+            : `This SOS is not available to your account. ${err.message}`,
+        );
+      });
+    return () => {
+      active = false;
+    };
+  }, [focusSosId, loading, mine, assigned]);
 
-  async function run(work, success, tone = 'ok') {
-    setBusy(true);
+  async function run(key, work, success, tone = 'ok') {
+    setPending((current) => ({ ...current, [key]: true }));
     setError('');
     setNotice('');
     try {
-      await work();
+      const result = await work();
       await load();
-      if (success) {
-        setNotice(success);
-        setNoticeTone(tone);
+      const message =
+        typeof success === 'function' ? success(result) : success;
+      const nextTone = typeof tone === 'function' ? tone(result) : tone;
+      if (message) {
+        setNotice(message);
+        setNoticeTone(nextTone);
       }
     } catch (err) {
       setError(err.message);
     } finally {
-      setBusy(false);
+      setPending((current) => {
+        const next = { ...current };
+        delete next[key];
+        return next;
+      });
     }
   }
 
   async function raise(event) {
     event.preventDefault();
-    await run(async () => {
-      const result = await api('/sos', {
-        method: 'POST',
-        body: {
-          incidentType: type,
-          ...AREAS[place],
-          ...(message.trim() ? { message: message.trim() } : {}),
-          ...(locationLabel.trim()
-            ? { locationLabel: locationLabel.trim() }
-            : {}),
-          ...(escalationEnabled
-            ? {
-                escalationPolicy: {
-                  maxLevels: Number(maxLevels),
-                  channels: CHANNEL_OPTIONS[channels],
-                },
-              }
-            : {}),
-        },
-      });
-      setMessage('');
-      setLocationLabel('');
-      const count = result.recipientCount ?? 0;
-      setNotice(
-        count > 0
+    await run(
+      'send',
+      async () => {
+        const result = await api('/sos', {
+          method: 'POST',
+          body: {
+            incidentType: type,
+            ...AREAS[place],
+            ...(message.trim() ? { message: message.trim() } : {}),
+            ...(locationLabel.trim()
+              ? { locationLabel: locationLabel.trim() }
+              : {}),
+            ...(escalationEnabled
+              ? {
+                  escalationPolicy: {
+                    maxLevels: Number(maxLevels),
+                    channels: CHANNEL_OPTIONS[channels],
+                  },
+                }
+              : {}),
+          },
+        });
+        setMessage('');
+        setLocationLabel('');
+        return result;
+      },
+      (result) => {
+        const count = result?.recipientCount ?? 0;
+        return count > 0
           ? `SOS sent. ${count} responder${count === 1 ? '' : 's'} and the community admin were notified.`
-          : 'SOS saved, but no responder covers this area right now. Contact neighbours and local help directly.',
-      );
-      setNoticeTone(count > 0 ? 'ok' : 'warn');
-    });
+          : 'SOS saved, but no responder covers this area right now. Contact neighbours and local help directly.';
+      },
+      (result) => ((result?.recipientCount ?? 0) > 0 ? 'ok' : 'warn'),
+    );
   }
 
   const openMine = mine.filter((sos) => OPEN.includes(sos.state));
   const openAssigned = assigned.filter((sos) => OPEN.includes(sos.state));
+  const stateKey = (id, state) => `state:${id}:${state}`;
+  const ackKey = (id) => `ack:${id}`;
 
   return (
     <div className="space-y-5">
-      <div className="rounded-2xl border border-red-200 bg-red-50 px-4 py-3 text-xs text-red-900">
-        <strong>Demo SOS</strong> | This alerts nearby responders and the
-        community admin inside the app. It does not call police, fire, or
-        ambulance services.
+      <div className="flex flex-col gap-3 rounded-2xl border-2 border-red-700 bg-red-700 px-4 py-4 text-white sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-base font-black">
+            If someone is in immediate danger, call local emergency services now.
+          </p>
+          <p className="mt-1 text-sm text-red-50">
+            Demo SOS only alerts registered responders and the community admin in
+            this app. It does not call police, fire or ambulance services.
+          </p>
+        </div>
+        <a
+          href="tel:112"
+          className="inline-flex shrink-0 items-center justify-center rounded-full bg-white px-5 py-2.5 text-sm font-black text-red-700 hover:bg-red-50"
+        >
+          Call 112
+        </a>
       </div>
       {error && (
         <p role="alert" className="rounded-xl bg-red-50 p-3 text-sm text-red-700">
@@ -152,12 +237,20 @@ export default function SosPanel({ area, profile, focusSosId }) {
           {notice}
         </p>
       )}
+      {focusNotice && (
+        <p
+          role="status"
+          className="rounded-xl border border-ink/15 bg-primary-soft p-3 text-sm"
+        >
+          {focusNotice}
+        </p>
+      )}
       <form onSubmit={raise} className={`${panel} space-y-4`}>
         <div>
           <h2 className="text-xl font-bold">Raise an SOS around {place}</h2>
           <p className="mt-2 text-sm text-ink-soft">
-            Your display name, message and approximate location are shared
-            with dispatched responders. Keep the message short and factual.
+            Your display name, message and approximate location are shared with
+            dispatched responders. Keep the message short and factual.
           </p>
         </div>
         <label className="block text-sm font-bold">
@@ -250,23 +343,47 @@ export default function SosPanel({ area, profile, focusSosId }) {
               </label>
             </div>
           )}
+          <p className="mt-3 text-xs leading-relaxed text-ink-soft">
+            Escalation is best-effort. In-app alerts only reach responders
+            registered here; SMS needs a configured provider and may be
+            unavailable.
+          </p>
+          {escalationEnabled && channels !== 'in_app' && (
+            <p
+              role="status"
+              className="mt-2 rounded-xl border border-amber-300 bg-amber-50 p-2 text-xs text-amber-900"
+            >
+              SMS delivery is not guaranteed. In-app alerts still apply when a
+              provider is unavailable.
+            </p>
+          )}
         </fieldset>
         <button
           className="btn-primary bg-red-600 hover:bg-red-700"
-          disabled={busy}
+          disabled={Boolean(pending.send)}
         >
-          {busy ? 'Sending...' : 'Send SOS'}
+          {pending.send ? 'Sending SOS…' : 'Send SOS'}
         </button>
       </form>
 
       <section className={`${panel} space-y-4`}>
-        <div className="flex items-center justify-between">
+        <div className="flex flex-wrap items-center justify-between gap-2">
           <h2 className="text-xl font-bold">Your open signals</h2>
-          <button className="btn-outline" disabled={busy} onClick={() => run()}>
-            Refresh
+          <button
+            className="btn-outline"
+            disabled={Boolean(pending.refresh)}
+            onClick={() => run('refresh', async () => {})}
+          >
+            {pending.refresh ? 'Refreshing…' : 'Refresh'}
           </button>
         </div>
-        {openMine.length ? (
+        {loading ? (
+          <div role="status" aria-live="polite" className="space-y-3">
+            <p className="text-sm text-ink-soft">Loading your SOS requests…</p>
+            <Skeleton className="h-24" />
+            <Skeleton className="h-24" />
+          </div>
+        ) : openMine.length ? (
           openMine.map((sos) => (
             <article
               key={sos.id}
@@ -292,7 +409,8 @@ export default function SosPanel({ area, profile, focusSosId }) {
               {sos.recipientCount === 0 && (
                 <p className="mt-2 rounded-xl bg-amber-50 p-3 text-xs text-amber-900">
                   No responder or community admin covers this area. Nobody has
-                  been notified in the app.
+                  been notified in the app. Call local help directly if this is
+                  urgent.
                 </p>
               )}
               {sos.recipients?.length > 0 && (
@@ -308,9 +426,10 @@ export default function SosPanel({ area, profile, focusSosId }) {
               <div className="mt-3 flex flex-wrap gap-2">
                 <button
                   className="btn-outline"
-                  disabled={busy}
+                  disabled={Boolean(pending[stateKey(sos.id, 'resolved')])}
                   onClick={() =>
                     run(
+                      stateKey(sos.id, 'resolved'),
                       () =>
                         api(`/sos/${sos.id}/state`, {
                           method: 'PUT',
@@ -323,13 +442,16 @@ export default function SosPanel({ area, profile, focusSosId }) {
                     )
                   }
                 >
-                  Mark resolved
+                  {pending[stateKey(sos.id, 'resolved')]
+                    ? 'Resolving…'
+                    : 'Mark resolved'}
                 </button>
                 <button
                   className="btn-outline text-red-700"
-                  disabled={busy}
+                  disabled={Boolean(pending[stateKey(sos.id, 'cancelled')])}
                   onClick={() =>
                     run(
+                      stateKey(sos.id, 'cancelled'),
                       () =>
                         api(`/sos/${sos.id}/state`, {
                           method: 'PUT',
@@ -342,21 +464,29 @@ export default function SosPanel({ area, profile, focusSosId }) {
                     )
                   }
                 >
-                  Cancel SOS
+                  {pending[stateKey(sos.id, 'cancelled')]
+                    ? 'Cancelling…'
+                    : 'Cancel SOS'}
                 </button>
               </div>
             </article>
           ))
         ) : (
           <p className="py-6 text-center text-sm text-ink-soft">
-            You have no open SOS requests.
+            You have no open SOS requests. Use the form above if you still need
+            in-app help.
           </p>
         )}
       </section>
 
       <section className={`${panel} space-y-4`}>
         <h2 className="text-xl font-bold">Dispatched to you</h2>
-        {openAssigned.length ? (
+        {loading ? (
+          <div role="status" aria-live="polite" className="space-y-3">
+            <p className="text-sm text-ink-soft">Loading assigned SOS requests…</p>
+            <Skeleton className="h-24" />
+          </div>
+        ) : openAssigned.length ? (
           openAssigned.map((sos) => {
             const link = mapLink(sos);
             return (
@@ -399,15 +529,16 @@ export default function SosPanel({ area, profile, focusSosId }) {
                       target="_blank"
                       rel="noreferrer"
                     >
-                      Open map
+                      Open map (opens in a new tab)
                     </a>
                   )}
                   {sos.acknowledgementState !== 'acknowledged' && (
                     <button
                       className="btn-primary"
-                      disabled={busy}
+                      disabled={Boolean(pending[ackKey(sos.id)])}
                       onClick={() =>
                         run(
+                          ackKey(sos.id),
                           () =>
                             api(`/sos/${sos.id}/acknowledge`, {
                               method: 'PUT',
@@ -417,7 +548,9 @@ export default function SosPanel({ area, profile, focusSosId }) {
                         )
                       }
                     >
-                      Acknowledge
+                      {pending[ackKey(sos.id)]
+                        ? 'Acknowledging…'
+                        : 'Acknowledge'}
                     </button>
                   )}
                 </div>
@@ -427,8 +560,8 @@ export default function SosPanel({ area, profile, focusSosId }) {
         ) : (
           <p className="py-6 text-center text-sm text-ink-soft">
             {profile?.role === 'responder'
-              ? 'No open SOS requests are dispatched to you right now.'
-              : 'SOS requests dispatched to responders appear here.'}
+              ? 'No open SOS requests are dispatched to you right now. You will see them here when a nearby signal is assigned.'
+              : 'SOS requests dispatched to responders appear here. Only assigned responders and community admins can view them.'}
           </p>
         )}
       </section>

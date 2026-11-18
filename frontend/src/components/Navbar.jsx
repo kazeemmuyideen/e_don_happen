@@ -1,13 +1,13 @@
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Link, NavLink, useLocation } from 'react-router-dom';
 import { session } from '../lib/api.js';
 import Logo from './Logo.jsx';
 
 const NAV_LINKS = [
-  { label: 'Home', href: '#hero' },
-  { label: 'How it works', href: '#how-it-works' },
-  { label: 'Features', href: '#features' },
-  { label: 'FAQ', href: '#faq' },
+  { label: 'Home', to: '/#hero' },
+  { label: 'How it works', to: '/#how-it-works' },
+  { label: 'Features', to: '/#features' },
+  { label: 'FAQ', to: '/#faq' },
 ];
 
 function useInstallPrompt() {
@@ -34,36 +34,46 @@ function useInstallPrompt() {
 
 export default function Navbar() {
   const [open, setOpen] = useState(false);
+  const menuButton = useRef(null);
   const { canInstall, install } = useInstallPrompt();
   const { pathname } = useLocation();
-  const onLanding = pathname === '/';
+  const signedIn = Boolean(session());
+
+  useEffect(() => {
+    setOpen(false);
+  }, [pathname]);
+
+  useEffect(() => {
+    if (!open) return undefined;
+    const onKeyDown = (event) => {
+      if (event.key === 'Escape') {
+        setOpen(false);
+        menuButton.current?.focus();
+      }
+    };
+    document.addEventListener('keydown', onKeyDown);
+    return () => document.removeEventListener('keydown', onKeyDown);
+  }, [open]);
 
   const close = () => setOpen(false);
 
-  const handleClick = (href) => {
-    close();
-    if (onLanding) {
-      document.querySelector(href)?.scrollIntoView({ behavior: 'smooth' });
-    }
-  };
-
   return (
     <header className="sticky top-0 z-40 border-b border-ink/10 bg-white/90 backdrop-blur">
-      <nav className="container-app flex h-16 items-center justify-between">
+      <nav className="container-app flex h-16 items-center justify-between" aria-label="Primary navigation">
         <Link to="/" onClick={close} aria-label="E don happen home">
           <Logo />
         </Link>
 
         <div className="hidden items-center gap-1 md:flex">
           {NAV_LINKS.map((link) => (
-            <a
-              key={link.href}
-              href={onLanding ? link.href : `/${link.href}`}
-              onClick={() => handleClick(link.href)}
+            <Link
+              key={link.to}
+              to={link.to}
+              onClick={close}
               className="rounded-full px-3 py-2 text-sm font-medium text-ink-soft transition hover:bg-ink/5 hover:text-ink"
             >
               {link.label}
-            </a>
+            </Link>
           ))}
         </div>
 
@@ -72,29 +82,36 @@ export default function Navbar() {
             <button
               type="button"
               onClick={install}
+              aria-label="Install E don happen app"
               className="btn-ghost text-sm"
             >
               Install app
             </button>
           )}
-          {session() && (
+          {signedIn && (
             <NavLink to="/dashboard" className="btn-ghost text-sm">
               Dashboard
             </NavLink>
           )}
-          <NavLink to="/login" className="btn-ghost text-sm">
-            Login
-          </NavLink>
-          <NavLink to="/register" className="btn-primary text-sm">
-            Sign up
-          </NavLink>
+          {!signedIn && (
+            <>
+              <NavLink to="/login" className="btn-ghost text-sm">
+                Login
+              </NavLink>
+              <NavLink to="/register" className="btn-primary text-sm">
+                Sign up
+              </NavLink>
+            </>
+          )}
         </div>
 
         <button
+          ref={menuButton}
           type="button"
           onClick={() => setOpen((value) => !value)}
-          aria-label="Toggle menu"
+          aria-controls="mobile-menu"
           aria-expanded={open}
+          aria-label={open ? 'Close navigation menu' : 'Open navigation menu'}
           className="grid size-10 place-items-center rounded-xl text-ink hover:bg-ink/5 md:hidden"
         >
           <svg
@@ -113,52 +130,58 @@ export default function Navbar() {
         </button>
       </nav>
 
-      {open && (
-        <div className="border-t border-ink/10 bg-white px-4 py-4 md:hidden">
-          <div className="flex flex-col gap-1">
-            {NAV_LINKS.map((link) => (
-              <a
-                key={link.href}
-                href={onLanding ? link.href : `/${link.href}`}
-                onClick={() => handleClick(link.href)}
-                className="rounded-xl px-3 py-3 text-sm font-medium text-ink-soft hover:bg-ink/5"
-              >
-                {link.label}
-              </a>
-            ))}
-          </div>
-          <div className="mt-4 flex flex-col gap-2">
-            {canInstall && (
-              <button
-                type="button"
-                onClick={install}
-                className="btn-outline w-full text-sm"
-              >
-                Install app
-              </button>
-            )}
-            {session() && (
-              <Link to="/dashboard" onClick={close} className="btn-outline">
-                Dashboard
-              </Link>
-            )}
+      <div
+        id="mobile-menu"
+        aria-label="Mobile navigation"
+        className={`${open ? 'block' : 'hidden'} border-t border-ink/10 bg-white px-4 py-4 md:hidden`}
+      >
+        <div className="flex flex-col gap-1">
+          {NAV_LINKS.map((link) => (
             <Link
-              to="/login"
+              key={link.to}
+              to={link.to}
               onClick={close}
+              className="rounded-xl px-3 py-3 text-sm font-medium text-ink-soft hover:bg-ink/5"
+            >
+              {link.label}
+            </Link>
+          ))}
+        </div>
+        <div className="mt-4 flex flex-col gap-2">
+          {canInstall && (
+            <button
+              type="button"
+              onClick={install}
               className="btn-outline w-full text-sm"
             >
-              Login
+              Install app
+            </button>
+          )}
+          {signedIn && (
+            <Link to="/dashboard" onClick={close} className="btn-outline">
+              Dashboard
             </Link>
-            <Link
-              to="/register"
-              onClick={close}
-              className="btn-primary w-full text-sm"
-            >
-              Sign up
-            </Link>
-          </div>
+          )}
+          {!signedIn && (
+            <>
+              <Link
+                to="/login"
+                onClick={close}
+                className="btn-outline w-full text-sm"
+              >
+                Login
+              </Link>
+              <Link
+                to="/register"
+                onClick={close}
+                className="btn-primary w-full text-sm"
+              >
+                Sign up
+              </Link>
+            </>
+          )}
         </div>
-      )}
+      </div>
     </header>
   );
 }

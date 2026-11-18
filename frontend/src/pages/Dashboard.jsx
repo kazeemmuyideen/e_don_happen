@@ -4,14 +4,15 @@ import CommunityPanel from '../components/CommunityPanel.jsx';
 import OpsPanel from '../components/OpsPanel.jsx';
 import EvidencePanel from '../components/EvidencePanel.jsx';
 import { disablePush } from '../lib/push.js';
-import { useCallback, useEffect, useState } from 'react';
-import { Navigate, useNavigate, useLocation } from 'react-router-dom';
-import { api, logout, session } from '../lib/api.js';
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { Navigate, useLocation, useNavigate } from 'react-router-dom';
+import { api, isOfflineError, logout, session } from '../lib/api.js';
 import { AREAS, CATEGORIES, STATUS_HELP } from '../data/areas.js';
 
 const field =
   'w-full rounded-xl border border-ink/15 bg-white px-3 py-2.5 text-sm outline-none focus:ring-2 focus:ring-primary';
 const panel = 'rounded-3xl border border-ink/10 bg-white p-5 shadow-sm sm:p-6';
+
 function when(value) {
   return new Date(value).toLocaleString('en-NG', {
     dateStyle: 'medium',
@@ -19,6 +20,7 @@ function when(value) {
     timeZone: 'Africa/Lagos',
   });
 }
+
 function Badge({ state }) {
   const color =
     state === 'verified'
@@ -38,9 +40,59 @@ function Badge({ state }) {
   );
 }
 
+function toError(value) {
+  return value instanceof Error
+    ? value
+    : new Error(value || 'Something went wrong. Please try again.');
+}
+
+function PanelError({ error, onRetry }) {
+  if (!error) return null;
+  const message = error instanceof Error ? error.message : String(error);
+  return (
+    <div
+      role="alert"
+      className="mb-4 flex flex-wrap items-center justify-between gap-3 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
+    >
+      <span>{message}</span>
+      {onRetry && (
+        <button
+          type="button"
+          onClick={onRetry}
+          className="rounded-full border border-red-300 px-3 py-1.5 text-xs font-bold hover:bg-red-100"
+        >
+          {isOfflineError(error) ? 'Reconnect and retry' : 'Retry'}
+        </button>
+      )}
+    </div>
+  );
+}
+
+function Skeleton({ label }) {
+  return (
+    <div
+      aria-busy="true"
+      aria-label={label}
+      className={`${panel} animate-pulse space-y-3`}
+    >
+      <div className="h-4 w-1/3 rounded bg-ink/10" />
+      <div className="h-4 w-2/3 rounded bg-ink/10" />
+      <div className="h-24 rounded-2xl bg-ink/5" />
+      <span className="sr-only">{label}</span>
+    </div>
+  );
+}
+
 export default function Dashboard() {
   const navigate = useNavigate();
-  const { search } = useLocation();
+  const { pathname, search } = useLocation();
+  const locationRef = useRef({ pathname, search });
+  locationRef.current = { pathname, search };
+  const params = new URLSearchParams(search);
+  const tabParam = params.get('tab');
+  const reportParam = params.get('report');
+  const focusSosId = params.get('sos');
+
   const [profile, setProfile] = useState(null);
   const [area, setArea] = useState('Yaba');
   const [radius, setRadius] = useState(5);
@@ -51,10 +103,28 @@ export default function Dashboard() {
   const [subscriptions, setSubscriptions] = useState([]);
   const [queue, setQueue] = useState([]);
   const [selected, setSelected] = useState(null);
-  const [error, setError] = useState('');
+  const [errors, setErrors] = useState({});
+  const [actionError, setActionError] = useState(null);
+  const [loading, setLoading] = useState({
+    profile: true,
+    feed: true,
+    inbox: true,
+    subscriptions: true,
+    queue: false,
+    detail: false,
+  });
+  const [loaded, setLoaded] = useState({
+    profile: false,
+    feed: false,
+    inbox: false,
+    subscriptions: false,
+    queue: false,
+    detail: false,
+  });
+  const [lastUpdated, setLastUpdated] = useState(null);
   const [notice, setNotice] = useState('');
-  const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
+  const [refreshing, setRefreshing] = useState(false);
   const [form, setForm] = useState({
     category: 'traffic',
     description: '',
@@ -62,64 +132,223 @@ export default function Dashboard() {
     postcode: '',
   });
   const [reason, setReason] = useState('');
-  const [initialized, setInitialized] = useState(false);
+
+  const generations = useRef({
+    profile: 0,
+    feed: 0,
+    inbox: 0,
+    subscriptions: 0,
+    queue: 0,
+    detail: 0,
+  });
+  const mounted = useRef(true);
+  const initialized = useRef(false);
+  const noticeTimer = useRef(null);
+
   const current = session();
   const moderator = ['moderator', 'super_admin'].includes(profile?.role);
-  const focusSosId = new URLSearchParams(search).get('sos');
 
-  const load = useCallback(async () => {
-    if (!session()) return;
+  const begin = useCallback((key) => {
+    generations.current[key] += 1;
+    return generations.current[key];
+  }, []);
+  const isCurrent = useCallback(
+    (key, id) => mounted.current && generations.current[key] === id,
+    [],
+  );
+  const setPanelLoading = useCallback((key, value) => {
+    setLoading((previous) =>
+      previous[key] === value ? previous : { ...previous, [key]: value },
+    );
+  }, []);
+  const setPanelError = useCallback((key, value) => {
+    setErrors((previous) => {
+      const next = value ? toError(value) : null;
+      return previous[key] === next ? previous : { ...previous, [key]: next };
+    });
+  }, []);
+  const markLoaded = useCallback((key) => {
+    setLoaded((previous) =>
+      previous[key] ? previous : { ...previous, [key]: true },
+    );
+    setLastUpdated(new Date());
+  }, []);
+  const clearNotice = useCallback(() => {
+    clearTimeout(noticeTimer.current);
+    setNotice('');
+  }, []);
+  const showNotice = useCallback((message) => {
+    clearTimeout(noticeTimer.current);
+    setNotice(message);
+    noticeTimer.current = setTimeout(() => setNotice(''), 5000);
+  }, []);
+
+  const updateParams = useCallback(
+    (updates, options = {}) => {
+      const next = new URLSearchParams(locationRef.current.search);
+      Object.entries(updates).forEach(([key, value]) => {
+        if (value === null || value === undefined || value === '')
+          next.delete(key);
+        else next.set(key, String(value));
+      });
+      const query = next.toString();
+      navigate(
+        {
+          pathname: locationRef.current.pathname,
+          search: query ? `?${query}` : '',
+        },
+        { replace: Boolean(options.replace) },
+      );
+    },
+    [navigate],
+  );
+
+  const changeArea = useCallback((value) => {
+    initialized.current = true;
+    setArea(value);
+  }, []);
+
+  const fetchProfile = useCallback(async () => {
+    const id = begin('profile');
+    setPanelLoading('profile', true);
+    try {
+      const data = await api('/auth/profile');
+      if (!isCurrent('profile', id)) return null;
+      setProfile(data);
+      setPanelError('profile', null);
+      markLoaded('profile');
+      if (!initialized.current && AREAS[data?.lgas?.[0]]) {
+        initialized.current = true;
+        setArea(data.lgas[0]);
+      }
+      return data;
+    } catch (err) {
+      if (isCurrent('profile', id)) setPanelError('profile', err);
+      return null;
+    } finally {
+      if (isCurrent('profile', id)) setPanelLoading('profile', false);
+    }
+  }, [begin, isCurrent, markLoaded, setPanelError, setPanelLoading]);
+
+  const fetchFeed = useCallback(async () => {
+    const id = begin('feed');
+    setPanelLoading('feed', true);
     const query = new URLSearchParams({
       ...AREAS[area],
       radius: radius * 1000,
       limit: 100,
     });
     if (category) query.set('category', category);
-    const [p, feed, notifications, prefs] = await Promise.all([
-      api('/auth/profile'),
-      api(`/reports?${query}`),
-      api('/notifications/inbox'),
-      api('/notifications/subscriptions'),
-    ]);
-    setProfile(p);
-    setReports(feed);
-    setInbox(notifications);
-    setSubscriptions(prefs);
-    if (['moderator', 'super_admin'].includes(p.role))
-      setQueue(await api('/moderation/queue'));
-    return p;
-  }, [area, radius, category]);
+    try {
+      const data = await api(`/reports?${query}`);
+      if (!isCurrent('feed', id)) return;
+      setReports(Array.isArray(data) ? data : []);
+      setPanelError('feed', null);
+      markLoaded('feed');
+    } catch (err) {
+      if (isCurrent('feed', id)) setPanelError('feed', err);
+    } finally {
+      if (isCurrent('feed', id)) setPanelLoading('feed', false);
+    }
+  }, [area, begin, category, isCurrent, markLoaded, radius, setPanelError, setPanelLoading]);
+
+  const fetchInbox = useCallback(async () => {
+    const id = begin('inbox');
+    setPanelLoading('inbox', true);
+    try {
+      const data = await api('/notifications/inbox');
+      if (!isCurrent('inbox', id)) return;
+      setInbox(Array.isArray(data) ? data : []);
+      setPanelError('inbox', null);
+      markLoaded('inbox');
+    } catch (err) {
+      if (isCurrent('inbox', id)) setPanelError('inbox', err);
+    } finally {
+      if (isCurrent('inbox', id)) setPanelLoading('inbox', false);
+    }
+  }, [begin, isCurrent, markLoaded, setPanelError, setPanelLoading]);
+
+  const fetchSubscriptions = useCallback(async () => {
+    const id = begin('subscriptions');
+    setPanelLoading('subscriptions', true);
+    try {
+      const data = await api('/notifications/subscriptions');
+      if (!isCurrent('subscriptions', id)) return;
+      setSubscriptions(Array.isArray(data) ? data : []);
+      setPanelError('subscriptions', null);
+      markLoaded('subscriptions');
+    } catch (err) {
+      if (isCurrent('subscriptions', id)) setPanelError('subscriptions', err);
+    } finally {
+      if (isCurrent('subscriptions', id)) setPanelLoading('subscriptions', false);
+    }
+  }, [begin, isCurrent, markLoaded, setPanelError, setPanelLoading]);
+
+  const fetchQueue = useCallback(async () => {
+    const id = begin('queue');
+    setPanelLoading('queue', true);
+    try {
+      const data = await api('/moderation/queue');
+      if (!isCurrent('queue', id)) return;
+      setQueue(Array.isArray(data) ? data : []);
+      setPanelError('queue', null);
+      markLoaded('queue');
+    } catch (err) {
+      if (isCurrent('queue', id)) setPanelError('queue', err);
+    } finally {
+      if (isCurrent('queue', id)) setPanelLoading('queue', false);
+    }
+  }, [begin, isCurrent, markLoaded, setPanelError, setPanelLoading]);
+
+  const fetchReport = useCallback(
+    async (id) => {
+      const requestId = begin('detail');
+      setPanelLoading('detail', true);
+      try {
+        const report = await api(`/reports/${id}`);
+        if (!isCurrent('detail', requestId)) return;
+        setSelected(report);
+        setPanelError('detail', null);
+        markLoaded('detail');
+      } catch (err) {
+        if (isCurrent('detail', requestId)) setPanelError('detail', err);
+      } finally {
+        if (isCurrent('detail', requestId)) setPanelLoading('detail', false);
+      }
+    },
+    [begin, isCurrent, markLoaded, setPanelError, setPanelLoading],
+  );
+
+  const reload = useCallback(async () => {
+    if (!session()) return;
+    const profileData = await fetchProfile();
+    const tasks = [fetchFeed(), fetchInbox(), fetchSubscriptions()];
+    if (['moderator', 'super_admin'].includes(profileData?.role))
+      tasks.push(fetchQueue());
+    await Promise.all(tasks);
+  }, [fetchFeed, fetchInbox, fetchProfile, fetchQueue, fetchSubscriptions]);
 
   useEffect(() => {
-    let active = true;
-    setLoading(true);
-    setError('');
-    load()
-      .then((p) => {
-        if (active && !initialized && p) {
-          setInitialized(true);
-          if (AREAS[p.lgas?.[0]]) setArea(p.lgas[0]);
-        }
-      })
-      .catch((err) => {
-        if (active) setError(err.message);
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
+    mounted.current = true;
     return () => {
-      active = false;
+      mounted.current = false;
+      clearTimeout(noticeTimer.current);
     };
-  }, [load, initialized]);
+  }, []);
 
   useEffect(() => {
-    const timer = setInterval(() => load().catch(() => {}), 20000);
+    if (!session()) return;
+    reload();
+  }, [reload]);
+
+  useEffect(() => {
+    if (!session()) return undefined;
+    const timer = setInterval(() => reload(), 20000);
     return () => clearInterval(timer);
-  }, [load]);
+  }, [reload]);
 
   useEffect(() => {
-    const requested = new URLSearchParams(search).get('tab');
-    if (!requested || !profile?.id) return;
+    if (!profile?.id) return;
     const allowed = [
       'Nearby',
       'Report',
@@ -130,33 +359,88 @@ export default function Dashboard() {
       'Preferences',
       ...(moderator ? ['Moderation', 'Operations'] : []),
     ];
-    if (allowed.includes(requested)) setTab(requested);
-  }, [search, profile?.id, moderator]);
+    if (!tabParam || !allowed.includes(tabParam)) {
+      if (tabParam !== tab) updateParams({ tab }, { replace: true });
+      return;
+    }
+    if (tabParam !== tab) setTab(tabParam);
+  }, [moderator, profile?.id, tab, tabParam, updateParams]);
 
   useEffect(() => {
-    const id = new URLSearchParams(search).get('report');
-    if (!profile?.id || !id || !/^[a-f0-9-]{36}$/i.test(id)) return;
-    api(`/reports/${id}`)
-      .then(setSelected)
-      .catch((err) => setError(err.message));
-  }, [search, profile?.id]);
+    if (!profile?.id) return;
+    if (!reportParam) {
+      begin('detail');
+      setSelected(null);
+      setPanelError('detail', null);
+      setPanelLoading('detail', false);
+      return;
+    }
+    if (!/^[a-f0-9-]{36}$/i.test(reportParam)) {
+      begin('detail');
+      setSelected(null);
+      setPanelError('detail', 'That report link is invalid.');
+      updateParams({ report: null }, { replace: true });
+      return;
+    }
+    fetchReport(reportParam);
+  }, [
+    begin,
+    fetchReport,
+    profile?.id,
+    reportParam,
+    setPanelError,
+    setPanelLoading,
+    updateParams,
+  ]);
 
   if (!current) return <Navigate to={`/login${search}`} replace />;
 
+  function changeTab(nextTab, extra = {}) {
+    setTab(nextTab);
+    if (!extra.report && !extra.sos) setSelected(null);
+    updateParams({
+      tab: nextTab,
+      report: extra.report || null,
+      sos: nextTab === 'SOS' ? extra.sos || null : null,
+    });
+  }
+
+  function openReport(id) {
+    updateParams({ report: id });
+  }
+
+  function closeReport() {
+    begin('detail');
+    setSelected(null);
+    updateParams({ report: null });
+  }
+
   async function act(work, message) {
     setBusy(true);
-    setError('');
-    setNotice('');
+    setActionError(null);
+    clearNotice();
     try {
       await work();
-      await load();
-      if (message) setNotice(message);
+      await reload();
+      if (message) showNotice(message);
     } catch (err) {
-      setError(err.message);
+      setActionError(err);
     } finally {
       setBusy(false);
     }
   }
+
+  async function refresh() {
+    setRefreshing(true);
+    clearNotice();
+    try {
+      await reload();
+      showNotice('Feed refreshed.');
+    } finally {
+      setRefreshing(false);
+    }
+  }
+
   async function publish(event) {
     event.preventDefault();
     await act(async () => {
@@ -183,9 +467,10 @@ export default function Dashboard() {
         postcode: '',
       });
       setSelected(report);
-      setTab('Nearby');
+      changeTab('Nearby', { report: report.id });
     }, 'Report saved. It starts as unverified until independent review.');
   }
+
   async function vote(report, action) {
     if (
       action === 'confirm' &&
@@ -202,9 +487,7 @@ export default function Dashboard() {
       if (selected?.id === report.id) setSelected(updated);
     }, 'Your contribution was saved. Each account has one vote per report.');
   }
-  async function openReport(id) {
-    await act(async () => setSelected(await api(`/reports/${id}`)));
-  }
+
   async function moderate(report, newState) {
     await act(async () => {
       await api('/moderation/actions', {
@@ -223,9 +506,10 @@ export default function Dashboard() {
         },
       });
       setReason('');
-      setSelected(null);
+      closeReport();
     }, `Report marked ${newState}. An audit record was saved.`);
   }
+
   async function toggleCategory(cat) {
     const existing = subscriptions.some((s) => s.category === cat);
     await act(
@@ -246,6 +530,7 @@ export default function Dashboard() {
       `${cat} notifications ${existing ? 'disabled' : 'enabled'} for this account.`,
     );
   }
+
   const unread = inbox.filter((n) => n.deliveryState !== 'acknowledged').length;
   const tabs = [
     'Nearby',
@@ -262,6 +547,24 @@ export default function Dashboard() {
       ? reports.filter((r) => r.reporterId === profile?.id)
       : reports;
   const votable = ['unverified', 'corroborated', 'disputed'];
+
+  function emptyState() {
+    return (
+      <div className={`${panel} py-12 text-center`}>
+        <h3 className="text-lg font-bold">No reports in this view</h3>
+        <p className="mt-2 text-sm text-ink-soft">
+          Try another area or category, or share a local observation.
+        </p>
+        <button
+          type="button"
+          className="btn-primary mt-5"
+          onClick={() => changeTab('Report')}
+        >
+          Create a report
+        </button>
+      </div>
+    );
+  }
 
   function queueCard(item) {
     return (
@@ -387,14 +690,20 @@ export default function Dashboard() {
             <p className="mt-2 text-sm text-ink-soft">
               Fresh observations. Clear confidence. A more informed community.
             </p>
+            <p className="mt-2 text-xs text-ink-soft" aria-live="polite">
+              {lastUpdated
+                ? `Last updated ${when(lastUpdated)}`
+                : 'Waiting for first update'}
+            </p>
           </div>
           <div className="flex gap-2">
             <button
+              type="button"
               className="btn-outline"
-              disabled={busy}
-              onClick={() => act(load, 'Feed refreshed.')}
+              disabled={busy || refreshing}
+              onClick={refresh}
             >
-              Refresh
+              {refreshing ? 'Refreshing…' : 'Refresh'}
             </button>
             <button
               className="btn-ghost"
@@ -416,25 +725,17 @@ export default function Dashboard() {
           {tabs.map((t) => (
             <button
               key={t}
+              type="button"
+              aria-current={tab === t ? 'page' : undefined}
               className={`shrink-0 rounded-full px-5 py-2.5 text-sm font-bold ${tab === t ? 'bg-ink text-white' : 'bg-white text-ink'}`}
-              onClick={() => {
-                setTab(t);
-                setSelected(null);
-              }}
+              onClick={() => changeTab(t)}
             >
               {t}
               {t === 'Notifications' && unread > 0 ? ` (${unread})` : ''}
             </button>
           ))}
         </nav>
-        {error && (
-          <p
-            role="alert"
-            className="mb-5 rounded-xl border border-red-200 bg-red-50 p-4 text-sm text-red-700"
-          >
-            {error}
-          </p>
-        )}
+        <PanelError error={actionError} />
         {notice && (
           <p
             role="status"
@@ -446,60 +747,70 @@ export default function Dashboard() {
         <div className="grid gap-6 lg:grid-cols-[1fr_290px]">
           <div className="min-w-0 space-y-5">
             {['Nearby', 'My reports', 'Moderation'].includes(tab) && (
-            <div className={`${panel} grid gap-3 sm:grid-cols-3`}>
-              <label className="text-xs font-bold">
-                Area
-                <select
-                  aria-label="Feed area"
-                  className={`${field} mt-2`}
-                  value={area}
-                  onChange={(e) => setArea(e.target.value)}
-                >
-                  {Object.keys(AREAS).map((a) => (
-                    <option key={a}>{a}</option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs font-bold">
-                Radius
-                <select
-                  className={`${field} mt-2`}
-                  value={radius}
-                  onChange={(e) => setRadius(Number(e.target.value))}
-                >
-                  {[1, 3, 5, 10, 25].map((r) => (
-                    <option key={r} value={r}>
-                      {r} km
-                    </option>
-                  ))}
-                </select>
-              </label>
-              <label className="text-xs font-bold">
-                Category
-                <select
-                  className={`${field} mt-2`}
-                  value={category}
-                  onChange={(e) => setCategory(e.target.value)}
-                >
-                  <option value="">All categories</option>
-                  {CATEGORIES.map((c) => (
-                    <option key={c}>{c}</option>
-                  ))}
-                </select>
-              </label>
-            </div>
+              <div className={`${panel} grid gap-3 sm:grid-cols-3`}>
+                <label className="text-xs font-bold">
+                  Area
+                  <select
+                    aria-label="Feed area"
+                    className={`${field} mt-2`}
+                    value={area}
+                    onChange={(e) => changeArea(e.target.value)}
+                  >
+                    {Object.keys(AREAS).map((a) => (
+                      <option key={a}>{a}</option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs font-bold">
+                  Radius
+                  <select
+                    className={`${field} mt-2`}
+                    value={radius}
+                    onChange={(e) => setRadius(Number(e.target.value))}
+                  >
+                    {[1, 3, 5, 10, 25].map((r) => (
+                      <option key={r} value={r}>
+                        {r} km
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="text-xs font-bold">
+                  Category
+                  <select
+                    className={`${field} mt-2`}
+                    value={category}
+                    onChange={(e) => setCategory(e.target.value)}
+                  >
+                    <option value="">All categories</option>
+                    {CATEGORIES.map((c) => (
+                      <option key={c}>{c}</option>
+                    ))}
+                  </select>
+                </label>
+              </div>
             )}
             {selected && (
               <div className="space-y-3 rounded-3xl border-2 border-primary p-3">
                 <div className="flex items-center justify-between px-2">
                   <h2 className="font-bold">Report detail</h2>
                   <button
-                    onClick={() => setSelected(null)}
+                    type="button"
+                    onClick={closeReport}
                     className="text-sm underline"
                   >
                     Close detail
                   </button>
                 </div>
+                {loading.detail && (
+                  <p role="status" className="px-3 text-xs text-ink-soft">
+                    Updating report…
+                  </p>
+                )}
+                <PanelError
+                  error={errors.detail}
+                  onRetry={() => fetchReport(selected.id)}
+                />
                 {card(selected)}
                 <p className="px-3 text-xs text-ink-soft">
                   Approximate location |{' '}
@@ -510,10 +821,8 @@ export default function Dashboard() {
                 <EvidencePanel
                   reportId={selected.id}
                   profile={profile}
-                  canUpload={
-                    selected.reporterId === profile?.id || moderator
-                  }
-                  onChanged={() => openReport(selected.id)}
+                  canUpload={selected.reporterId === profile?.id || moderator}
+                  onChanged={() => fetchReport(selected.id)}
                 />
                 {moderator && selected.reporterId !== profile?.id && (
                   <div className={panel}>
@@ -532,6 +841,7 @@ export default function Dashboard() {
                       {['verified', 'resolved', 'removed'].map((state) => (
                         <button
                           key={state}
+                          type="button"
                           className="btn-outline capitalize"
                           disabled={
                             busy ||
@@ -564,30 +874,35 @@ export default function Dashboard() {
                   </h2>
                   <span className="text-sm text-ink-soft">
                     {tab === 'Moderation' ? queue.length : items.length} reports
+                    {(tab === 'Moderation'
+                      ? loading.queue && loaded.queue
+                      : loading.feed && loaded.feed)
+                      ? ' • Updating…'
+                      : ''}
                   </span>
                 </div>
-                {loading ? (
-                  <p className={panel}>Loading the local feed...</p>
-                ) : tab === 'Moderation' && queue.length ? (
-                  queue.map(queueCard)
-                ) : items.length ? (
-                  items.map(card)
+                {tab === 'Moderation' ? (
+                  <>
+                    <PanelError error={errors.queue} onRetry={fetchQueue} />
+                    {loading.queue && !loaded.queue ? (
+                      <Skeleton label="Loading the review queue" />
+                    ) : queue.length ? (
+                      queue.map(queueCard)
+                    ) : errors.queue ? null : (
+                      emptyState()
+                    )}
+                  </>
                 ) : (
-                  <div className={`${panel} py-12 text-center`}>
-                    <h3 className="text-lg font-bold">
-                      No reports in this view
-                    </h3>
-                    <p className="mt-2 text-sm text-ink-soft">
-                      Try another area or category, or share a local
-                      observation.
-                    </p>
-                    <button
-                      className="btn-primary mt-5"
-                      onClick={() => setTab('Report')}
-                    >
-                      Create a report
-                    </button>
-                  </div>
+                  <>
+                    <PanelError error={errors.feed} onRetry={fetchFeed} />
+                    {loading.feed && !loaded.feed ? (
+                      <Skeleton label="Loading the local feed" />
+                    ) : items.length ? (
+                      items.map(card)
+                    ) : errors.feed ? null : (
+                      emptyState()
+                    )}
+                  </>
                 )}
               </>
             )}
@@ -606,7 +921,7 @@ export default function Dashboard() {
                     aria-label="Report area"
                     className={`${field} mt-2`}
                     value={area}
-                    onChange={(e) => setArea(e.target.value)}
+                    onChange={(e) => changeArea(e.target.value)}
                   >
                     {Object.keys(AREAS).map((name) => (
                       <option key={name}>{name}</option>
@@ -695,7 +1010,7 @@ export default function Dashboard() {
               <CommunityPanel
                 area={area}
                 profile={profile}
-                onProfileChanged={load}
+                onProfileChanged={reload}
               />
             )}
             {tab === 'Operations' && moderator && <OpsPanel />}
@@ -707,62 +1022,75 @@ export default function Dashboard() {
                   New reports matching your saved area, radius and categories.
                   Updates appear every 20 seconds or when you refresh.
                 </p>
-                <div className="mt-5 space-y-3">
-                  {inbox.length ? (
-                    inbox.map((n) => (
-                      <article
-                        key={n.id}
-                        className={`rounded-2xl border p-4 ${n.deliveryState === 'acknowledged' ? 'border-ink/10' : 'border-primary bg-primary-soft'}`}
-                      >
-                        <h3 className="font-bold">
-                          {n.payload?.title || 'Local report update'}
-                        </h3>
-                        <p className="mt-2 text-sm">{n.payload?.body}</p>
-                        <p className="mt-2 text-xs text-ink-soft">
-                          {when(n.createdAt)} |{' '}
-                          {n.deliveryState === 'acknowledged' ? 'Read' : 'New'}
-                        </p>
-                        <div className="mt-3 flex gap-4">
-                          <button
-                            className="text-sm font-bold underline"
-                            onClick={() => {
-                              if (n.payload?.sosId) {
-                                setSelected(null);
-                                setTab('SOS');
-                                return;
-                              }
-                              openReport(
-                                n.payload?.reportId || n.incidentIdOrSosId,
-                              );
-                            }}
+                <PanelError error={errors.inbox} onRetry={fetchInbox} />
+                {loading.inbox && !loaded.inbox ? (
+                  <Skeleton label="Loading local notifications" />
+                ) : (
+                  <>
+                    {loading.inbox && loaded.inbox && (
+                      <p role="status" className="mt-3 text-xs text-ink-soft">
+                        Updating inbox…
+                      </p>
+                    )}
+                    <div className="mt-5 space-y-3">
+                      {inbox.length ? (
+                        inbox.map((n) => (
+                          <article
+                            key={n.id}
+                            className={`rounded-2xl border p-4 ${n.deliveryState === 'acknowledged' ? 'border-ink/10' : 'border-primary bg-primary-soft'}`}
                           >
-                            {n.payload?.sosId ? 'Open SOS' : 'Open report'}
-                          </button>
-                          {n.deliveryState !== 'acknowledged' && (
-                            <button
-                              className="text-sm underline"
-                              disabled={busy}
-                              onClick={() =>
-                                act(() =>
-                                  api(`/notifications/inbox/${n.id}/read`, {
-                                    method: 'PUT',
-                                  }),
-                                )
-                              }
-                            >
-                              Mark read
-                            </button>
-                          )}
-                        </div>
-                      </article>
-                    ))
-                  ) : (
-                    <p className="py-10 text-center text-ink-soft">
-                      No matching reports yet. Save your preferences, then
-                      publish from a second account.
-                    </p>
-                  )}
-                </div>
+                            <h3 className="font-bold">
+                              {n.payload?.title || 'Local report update'}
+                            </h3>
+                            <p className="mt-2 text-sm">{n.payload?.body}</p>
+                            <p className="mt-2 text-xs text-ink-soft">
+                              {when(n.createdAt)} |{' '}
+                              {n.deliveryState === 'acknowledged' ? 'Read' : 'New'}
+                            </p>
+                            <div className="mt-3 flex gap-4">
+                              <button
+                                className="text-sm font-bold underline"
+                                onClick={() => {
+                                  if (n.payload?.sosId) {
+                                    begin('detail');
+                                    setSelected(null);
+                                    changeTab('SOS', { sos: n.payload.sosId });
+                                    return;
+                                  }
+                                  openReport(
+                                    n.payload?.reportId || n.incidentIdOrSosId,
+                                  );
+                                }}
+                              >
+                                {n.payload?.sosId ? 'Open SOS' : 'Open report'}
+                              </button>
+                              {n.deliveryState !== 'acknowledged' && (
+                                <button
+                                  className="text-sm underline"
+                                  disabled={busy}
+                                  onClick={() =>
+                                    act(() =>
+                                      api(`/notifications/inbox/${n.id}/read`, {
+                                        method: 'PUT',
+                                      }),
+                                    )
+                                  }
+                                >
+                                  Mark read
+                                </button>
+                              )}
+                            </div>
+                          </article>
+                        ))
+                      ) : (
+                        <p className="py-10 text-center text-ink-soft">
+                          No matching reports yet. Save your preferences, then
+                          publish from a second account.
+                        </p>
+                      )}
+                    </div>
+                  </>
+                )}
               </div>
             )}
             {tab === 'Preferences' && (
@@ -780,7 +1108,7 @@ export default function Dashboard() {
                       aria-label="Preference area"
                       className={`${field} mt-2`}
                       value={area}
-                      onChange={(e) => setArea(e.target.value)}
+                      onChange={(e) => changeArea(e.target.value)}
                     >
                       {Object.keys(AREAS).map((name) => (
                         <option key={name}>{name}</option>
@@ -803,22 +1131,39 @@ export default function Dashboard() {
                     </select>
                   </label>
                 </div>
-                <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
-                  {CATEGORIES.map((cat) => (
-                    <label
-                      key={cat}
-                      className="flex items-center gap-2 rounded-xl border border-ink/10 p-3 text-sm capitalize"
-                    >
-                      <input
-                        type="checkbox"
-                        checked={subscriptions.some((s) => s.category === cat)}
-                        onChange={() => toggleCategory(cat)}
-                        disabled={busy}
-                      />
-                      {cat}
-                    </label>
-                  ))}
-                </div>
+                <PanelError
+                  error={errors.subscriptions}
+                  onRetry={fetchSubscriptions}
+                />
+                {loading.subscriptions && !loaded.subscriptions ? (
+                  <Skeleton label="Loading notification preferences" />
+                ) : (
+                  <>
+                    {loading.subscriptions && loaded.subscriptions && (
+                      <p role="status" className="text-xs text-ink-soft">
+                        Updating preferences…
+                      </p>
+                    )}
+                    <div className="grid grid-cols-2 gap-3 sm:grid-cols-3">
+                      {CATEGORIES.map((cat) => (
+                        <label
+                          key={cat}
+                          className="flex items-center gap-2 rounded-xl border border-ink/10 p-3 text-sm capitalize"
+                        >
+                          <input
+                            type="checkbox"
+                            checked={subscriptions.some(
+                              (s) => s.category === cat,
+                            )}
+                            onChange={() => toggleCategory(cat)}
+                            disabled={busy}
+                          />
+                          {cat}
+                        </label>
+                      ))}
+                    </div>
+                  </>
+                )}
                 <button
                   className="btn-primary"
                   disabled={busy}
@@ -854,29 +1199,37 @@ export default function Dashboard() {
             )}
           </div>
           <aside className="space-y-5">
-            <div className="rounded-3xl bg-ink p-6 text-white">
-              <p className="text-xs font-bold uppercase tracking-wider text-white/60">
-                Your contribution
-              </p>
-              <h2 className="mt-3 text-xl font-bold">
-                {profile?.trustedContributor
-                  ? 'Trusted contributor'
-                  : 'Building local trust'}
-              </h2>
-              <p className="mt-3 text-sm text-white/75">
-                {profile?.verifiedReports || 0} / 10 moderator-verified reports
-              </p>
-              <progress
-                className="mt-4 w-full accent-primary"
-                max={10}
-                value={Math.min(profile?.verifiedReports || 0, 10)}
-              />
-              <p className="mt-3 text-xs leading-relaxed text-white/60">
-                Earn the badge through ten currently verified reports. It
-                reflects contribution history; every new report still needs its
-                own review.
-              </p>
-            </div>
+            <PanelError
+              error={errors.profile}
+              onRetry={fetchProfile}
+            />
+            {loading.profile && !loaded.profile ? (
+              <Skeleton label="Loading contribution summary" />
+            ) : (
+              <div className="rounded-3xl bg-ink p-6 text-white">
+                <p className="text-xs font-bold uppercase tracking-wider text-white/60">
+                  Your contribution
+                </p>
+                <h2 className="mt-3 text-xl font-bold">
+                  {profile?.trustedContributor
+                    ? 'Trusted contributor'
+                    : 'Building local trust'}
+                </h2>
+                <p className="mt-3 text-sm text-white/75">
+                  {profile?.verifiedReports || 0} / 10 moderator-verified reports
+                </p>
+                <progress
+                  className="mt-4 w-full accent-primary"
+                  max={10}
+                  value={Math.min(profile?.verifiedReports || 0, 10)}
+                />
+                <p className="mt-3 text-xs leading-relaxed text-white/60">
+                  Earn the badge through ten currently verified reports. It
+                  reflects contribution history; every new report still needs
+                  its own review.
+                </p>
+              </div>
+            )}
             <div className={panel}>
               <h2 className="font-bold">Confidence, explained</h2>
               <dl className="mt-4 space-y-4">

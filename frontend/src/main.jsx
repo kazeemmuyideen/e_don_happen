@@ -5,7 +5,17 @@ import { registerSW } from 'virtual:pwa-register'
 import './index.css'
 import App from './App.jsx'
 
-registerSW({ immediate: true })
+const updateSW = registerSW({
+  immediate: true,
+  onNeedRefresh() {
+    window.__PWA_UPDATE__ = updateSW
+    window.dispatchEvent(
+      new CustomEvent('app-update-available', {
+        detail: { updateSW },
+      }),
+    )
+  },
+})
 
 createRoot(document.getElementById('root')).render(
   <StrictMode>

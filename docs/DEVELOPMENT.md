@@ -85,9 +85,9 @@ Normal workspace execution uses backend as the API working directory. Config loa
 | JWT_ACCESS_EXPIRY / JWT_REFRESH_EXPIRY | 15m in code (2h in example) / 7d | Access and refresh lifetimes |
 | DEMO_MODE | false unless true | Development-only console OTP and schema synchronization gate; rejected in production |
 | CORS_ORIGIN | example http://127.0.0.1:5173 | Explicit allowed browser origin; production requires a specific HTTPS origin, not `*` |
-| TRUST_PROXY | false | `false`, `true` (one hop), or a positive integer hop count; production requires a positive count |
-| RATE_LIMIT_WINDOW_SECONDS / RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX | 60 / 300 / 20 | Redis-backed per-client-IP window; send-otp/verify-otp/refresh use the tighter auth bucket; health and webhook paths are exempt |
-| JSON_BODY_LIMIT | 8mb | JSON/urlencoded body limit; raw body is retained for webhook signature checks |
+| TRUST_PROXY | false | `false`, `true` (one hop), or a positive integer hop count; production requires an explicit integer hop count |
+| RATE_LIMIT_WINDOW_SECONDS / RATE_LIMIT_MAX / AUTH_RATE_LIMIT_MAX / EXPENSIVE_RATE_LIMIT_MAX | 60 / 300 / 20 / 30 | Redis-backed per-user-or-IP windows; auth requests use the tighter bucket, SOS/report/evidence/payment writes use the expensive bucket, and health/webhook paths are exempt |
+| JSON_BODY_LIMIT | 8mb | JSON/urlencoded body limit; raw body is retained only for webhook signature checks |
 | SWAGGER_ENABLED | false | Expose `/api/docs` in production only when explicitly true |
 | DEMO_OTP_FILE | .local/demo-otps.json | Private console-driver mailbox, relative to backend working directory |
 | OTP_DELIVERY_DRIVER / WHATSAPP_DRIVER | unset locally; console demo default | OTP channel (`whatsapp`, `sms`, or demo-only `console`); `OTP_DELIVERY_DRIVER` overrides `WHATSAPP_DRIVER` |
@@ -117,7 +117,7 @@ Normal workspace execution uses backend as the API working directory. Config loa
 | API_PORT | 3000 | Static proxy's loopback upstream |
 | CLOUDFLARED_PATH | local tools lookup or PATH | Optional tunnel executable |
 
-TypeORM synchronization runs only with `DEMO_MODE=true` and `NODE_ENV` other than production. Versioned migrations live in `backend/src/migrations`; `1794978450583-InitialSchema.ts` installs `postgis`/`uuid-ossp` and creates all current tables. Use the backend `typeorm`/`migration:*` scripts with `backend/src/config/typeorm.datasource.ts`; CI verifies `migration:run` and `migration:show` against a fresh database. `start:prod` runs `node dist/main.js`; set `NODE_ENV` explicitly through the deployment environment.
+TypeORM synchronization runs only with `DEMO_MODE=true` and `NODE_ENV` other than production. Versioned migrations live in `backend/src/migrations`; `1794978450583-InitialSchema.ts` installs `postgis`/`uuid-ossp` and creates all current tables, and `1794979000000-ScalabilityIndexes.ts` adds indexes for feed, geo, notification, SOS, evidence, moderation, audit, and payment queries. Use the backend `typeorm`/`migration:*` scripts with `backend/src/config/typeorm.datasource.ts`; CI verifies `migration:run` and `migration:show` against a fresh database, and the migration was also verified with run/revert/run locally. `start:prod` runs `node dist/main.js`; set `NODE_ENV` and `BIND_HOST` explicitly through the deployment environment.
 
 ## Identity and sessions
 
@@ -259,7 +259,7 @@ Pilot areas are Yaba, Ikeja, Surulere, Eti-Osa, Lagos Island, and Ikorodu with m
 
 ### Service worker and installation
 
-Vite's PWA plugin uses injectManifest to compile the custom service worker. Workbox precaches built shell assets, removes outdated caches, claims clients, and activates updates. Navigation falls back to the app shell except /api. API responses are not cached; there are no offline report writes, background sync, or offline inbox guarantees.
+Vite's PWA plugin uses injectManifest to compile the custom service worker. Workbox precaches built shell assets and removes outdated caches; updates are prompted by the UI instead of replacing an open page automatically. Navigation falls back to the app shell except /api. API responses are not cached; there are no offline report writes, background sync, or offline inbox guarantees.
 
 Push handlers call showNotification with title, body, icon, badge, tag, and target URL. Click handling permits same-origin destinations and focuses/navigates an existing window or opens one. The UI handles beforeinstallprompt where supported and supplies iOS installation guidance. Browser APIs require a secure context, service workers, PushManager, and Notification support. Apple mobile Web Push requires an installed Home Screen web app on supported iOS/iPadOS (16.4+); browser permission remains user-controlled. OS focus modes and settings can suppress presentation.
 
@@ -419,7 +419,7 @@ Vitest covers the app controller, production environment validation, phone norma
 | OTP limited | Reuse a signed-in session or wait for the fifteen-minute window; do not weaken limits for ordinary use |
 | Authentication 503 | Console OTP outside demo mode, or the selected WhatsApp/SMS provider is unconfigured; check `OTP_DELIVERY_DRIVER`/`WHATSAPP_DRIVER` |
 | Production startup fails | Read the collected validation errors; fix `DEMO_MODE`, secrets, `CORS_ORIGIN`, `TRUST_PROXY`, and selected provider credentials |
-| Requests return 429 | Check `RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_MAX`, `TRUST_PROXY`, and Redis; health and webhook paths are exempt |
+| Requests return 429 | Check `RATE_LIMIT_MAX`, `AUTH_RATE_LIMIT_MAX`, `EXPENSIVE_RATE_LIMIT_MAX`, `TRUST_PROXY`, and Redis; health and webhook paths are exempt |
 | Payment webhook rejected | Verify the `x-paystack-signature`/`x-payment-signature` header and raw body against `PAYMENT_WEBHOOK_SECRET` |
 | Evidence cannot be opened | Check `scanState`; infected/error assets are quarantined and not downloadable |
 | Stale frontend after edit | Development uses Vite; built serving requires rebuild; inspect installed service-worker/cache state |
@@ -435,7 +435,7 @@ Vitest covers the app controller, production environment validation, phone norma
 This implementation has development defaults and still needs operational hardening. Startup validation and CI catch unsafe configuration, but a production deployment is not just a different start command.
 
 1. Authorization has improved (no `privacySettings.isAdmin` trust, validated administrative/quick-action DTOs); still scope moderator access, define appeal ownership, prevent self/duplicate abuse, and review role bootstrap and account lifecycle policies.
-2. Use production validation as a gate: non-placeholder secrets of at least 32 characters, distinct JWT secrets, a specific HTTPS `CORS_ORIGIN`, positive `TRUST_PROXY`, real OTP provider credentials, ClamAV scanning, Paystack credentials with an HTTPS callback, and a reviewed `DISPATCH_DRIVER` choice (`off` by default; `sms` requires credentials). Canonical phone normalization, shared Redis OTP/rate-limit state, security headers, and request IDs are in place; still add device throttles, fraud controls, and refresh rotation/revocation.
+2. Use production validation as a gate: non-placeholder secrets of at least 32 characters, distinct JWT secrets, a specific HTTPS `CORS_ORIGIN`, explicit integer `TRUST_PROXY` hops and `BIND_HOST`, real OTP provider credentials, ClamAV scanning, Paystack credentials with an HTTPS callback, and a reviewed `DISPATCH_DRIVER` choice (`off` by default; `sms` requires credentials). Canonical phone normalization, shared Redis OTP/rate-limit state with authenticated-user keys and expensive-write buckets, security headers, and request IDs are in place; still add device throttles, fraud controls, and refresh rotation/revocation.
 3. Use the versioned migrations deliberately: the initial migration creates `postgis`/`uuid-ossp` and all current tables. Keep `DEMO_MODE` synchronization development-only, use least-privilege credentials, and test upgrades/rollback on a copy. Add encrypted backups, retention policy, and restore drills; do not treat database health as a backup.
 4. Deploy a stable HTTPS origin with TLS termination/reverse proxy, same-origin /api routing, correct CORS, explicit `NODE_ENV=production` and `BIND_HOST`, managed secrets, persistent VAPID keys, a reviewed `JSON_BODY_LIMIT`, and nonpublic database/Redis. Swagger stays off unless `SWAGGER_ENABLED=true`. The loopback API needs an ingress proxy on the same host or an explicit binding redesign for separate containers.
 5. Containerize or supervise processes, add health/readiness checks, structured redacted logs, error tracking, metrics, graceful worker drain, and push retry/queue monitoring. Installed telemetry dependencies do not mean telemetry is configured. See [Monitoring and uptime](#monitoring-and-uptime) for the external probe contract, exit-code script, and example container/orchestrator checks.

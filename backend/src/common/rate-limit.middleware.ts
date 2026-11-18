@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import type { NextFunction, Request, Response } from 'express';
 import type { Redis } from 'ioredis';
 import { REDIS_CLIENT } from '../redis/redis.module.js';
+import { JwtTokenService } from '../modules/identity/services/jwt.service.js';
 
 const RATE_LIMIT_SCRIPT = `
 local current = redis.call('INCR', KEYS[1])
@@ -18,6 +19,7 @@ export class RateLimitMiddleware implements NestMiddleware {
   constructor(
     @Inject(REDIS_CLIENT) private readonly redis: Redis,
     private readonly config: ConfigService,
+    private readonly tokens: JwtTokenService,
   ) {}
 
   async use(req: Request, res: Response, next: NextFunction) {
@@ -36,11 +38,16 @@ export class RateLimitMiddleware implements NestMiddleware {
       path.endsWith('/auth/send-otp') ||
       path.endsWith('/auth/verify-otp') ||
       path.endsWith('/auth/refresh');
+    const expensivePath = this.isExpensiveRoute(req.method, path);
+    const tier = authPath ? 'auth' : expensivePath ? 'expensive' : 'api';
     const max = authPath
       ? this.numberSetting('AUTH_RATE_LIMIT_MAX', 20)
-      : this.numberSetting('RATE_LIMIT_MAX', 300);
+      : expensivePath
+        ? this.numberSetting('EXPENSIVE_RATE_LIMIT_MAX', 30)
+        : this.numberSetting('RATE_LIMIT_MAX', 300);
     const clientIp = req.ip || req.socket.remoteAddress || 'unknown';
-    const key = `rate:${authPath ? 'auth' : 'api'}:${clientIp}`;
+    const userId = this.authenticatedUserId(req);
+    const key = `rate:${tier}:${clientIp}:${userId ? `user:${userId}` : 'anon'}`;
 
     try {
       const [count, ttl] = (await this.redis.eval(
@@ -72,6 +79,31 @@ export class RateLimitMiddleware implements NestMiddleware {
       }
     }
     next();
+  }
+
+  private isExpensiveRoute(method: string, path: string) {
+    if (method !== 'POST') return false;
+    return (
+      path === '/api/sos' ||
+      path === '/api/reports' ||
+      /^\/api\/reports\/[^/]+\/evidence(?:\/upload)?$/.test(path) ||
+      path === '/api/billing/payments/checkout'
+    );
+  }
+
+  private authenticatedUserId(req: Request) {
+    const user = (req as Request & { user?: { id?: unknown } }).user;
+    if (typeof user?.id === 'string' && user.id) return user.id;
+    const token = req.headers.authorization?.match(/^Bearer\s+(.+)$/i)?.[1];
+    if (!token) return undefined;
+    try {
+      const payload = this.tokens.verifyAccessToken(token);
+      return typeof payload.sub === 'string' && payload.sub
+        ? payload.sub
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private numberSetting(name: string, fallback: number) {

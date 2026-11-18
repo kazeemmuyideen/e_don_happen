@@ -7,26 +7,25 @@ const COLUMNS = [
   {
     title: "Product",
     links: [
-      { label: "Features", href: "#features" },
-      { label: "How it works", href: "#how-it-works" },
-      { label: "FAQ", href: "#faq" },
-      // { label: 'Dashboard', to: '/dashboard' },
+      { label: "Features", to: "/#features" },
+      { label: "How it works", to: "/#how-it-works" },
+      { label: "FAQ", to: "/#faq" },
     ],
   },
   {
     title: "Company",
     links: [
-      { label: "About us", href: "#hero" },
+      { label: "About us", to: "/#hero" },
       { label: "Contact", href: "mailto:hello@edonhappen.app" },
-      { label: "Careers", href: "#faq" },
+      { label: "Careers", to: "/#faq" },
     ],
   },
   {
     title: "Legal",
     links: [
-      { label: "Privacy policy", href: "#faq" },
-      { label: "Terms of service", href: "#faq" },
-      { label: "Cookie policy", href: "#faq" },
+      { label: "Privacy policy", to: "/#faq" },
+      { label: "Terms of service", to: "/#faq" },
+      { label: "Cookie policy", to: "/#faq" },
     ],
   },
 ];
@@ -59,9 +58,9 @@ export default function Footer() {
             </p>
             <div className="mt-5 flex gap-3">
               {SOCIALS.map((social) => (
-                <a
+                <Link
                   key={social.label}
-                  href="#hero"
+                  to="/#hero"
                   aria-label={social.label}
                   className="grid size-9 place-items-center rounded-full bg-white/10 text-white/80 transition hover:bg-primary hover:text-ink"
                 >
@@ -72,7 +71,7 @@ export default function Footer() {
                   >
                     <path d={social.path} />
                   </svg>
-                </a>
+                </Link>
               ))}
             </div>
           </div>
